@@ -12,13 +12,16 @@ import {
   Send,
   MessageSquare,
   CheckCircle2,
+  Check,
+  FileCheck,
 } from 'lucide-react'
-import type { ProgressStage, RoomStatus } from '@/types'
+import type { ProgressStage, RoomStatus, HandoverItemKey, Schedule } from '@/types'
 import {
   PROGRESS_LABELS,
   ROOM_STATUS_LABELS,
   ROOM_TYPE_LABELS,
   QUALIFICATION_LABELS,
+  HANDOVER_ITEM_LABELS,
 } from '@/types'
 
 const PROGRESS_STAGES: ProgressStage[] = [
@@ -90,11 +93,14 @@ export default function Rooms() {
   const updateScheduleProgress = useStore((s) => s.updateScheduleProgress)
   const reportDelay = useStore((s) => s.reportDelay)
   const dispatchSupport = useStore((s) => s.dispatchSupport)
+  const toggleHandoverItem = useStore((s) => s.toggleHandoverItem)
+  const completeHandover = useStore((s) => s.completeHandover)
 
   const [delayModalRoomId, setDelayModalRoomId] = useState<string | null>(null)
   const [selectedDelayReason, setSelectedDelayReason] = useState<string | null>(null)
   const [customDelayReason, setCustomDelayReason] = useState('')
   const [supportPopoverRoomId, setSupportPopoverRoomId] = useState<string | null>(null)
+  const [handoverModalSchedule, setHandoverModalSchedule] = useState<Schedule | null>(null)
   const [confirmStage, setConfirmStage] = useState<{
     scheduleId: string
     stage: ProgressStage
@@ -139,7 +145,18 @@ export default function Rooms() {
   }
 
   function handleAdvanceStage(scheduleId: string, stage: ProgressStage) {
-    setConfirmStage({ scheduleId, stage })
+    if (stage === 'handover') {
+      updateScheduleProgress(scheduleId, stage)
+      const sched = schedules.find((s) => s.id === scheduleId)
+      if (sched) {
+        setTimeout(() => {
+          const updated = useStore.getState().schedules.find((s) => s.id === scheduleId)
+          if (updated) setHandoverModalSchedule(updated)
+        }, 0)
+      }
+    } else {
+      setConfirmStage({ scheduleId, stage })
+    }
   }
 
   function confirmAdvanceStage() {
@@ -164,6 +181,27 @@ export default function Rooms() {
     setSupportPopoverRoomId(null)
   }
 
+  function handleToggleHandoverItem(item: HandoverItemKey, value?: boolean | string) {
+    if (!handoverModalSchedule) return
+    toggleHandoverItem(handoverModalSchedule.id, item, value)
+    const updated = useStore.getState().schedules.find((s) => s.id === handoverModalSchedule.id)
+    if (updated) setHandoverModalSchedule(updated)
+  }
+
+  function handleCompleteHandover() {
+    if (!handoverModalSchedule) return
+    const h = handoverModalSchedule.handover
+    if (!h || !h.customer_departed || !h.consumables_collected || !h.photos_archived) return
+    completeHandover(handoverModalSchedule.id)
+    setHandoverModalSchedule(null)
+  }
+
+  const handoverAllDone = handoverModalSchedule?.handover
+    ? handoverModalSchedule.handover.customer_departed &&
+      handoverModalSchedule.handover.consumables_collected &&
+      handoverModalSchedule.handover.photos_archived
+    : false
+
   return (
     <div className="min-h-screen bg-navy-950 p-6">
       <div className="mx-auto max-w-7xl">
@@ -180,6 +218,7 @@ export default function Rooms() {
             const statusCfg = STATUS_CONFIG[room.status]
             const stageIdx = schedule ? getStageIndex(schedule.progress) : -1
             const badgeInfo = ROOM_TYPE_BADGE[room.type]
+            const isHandover = schedule?.progress === 'handover' && !schedule.handoverCompletedAt
 
             return (
               <div key={room.id} className={cn('card card-hover border', statusCfg.border)}>
@@ -229,6 +268,7 @@ export default function Rooms() {
                       const isCompleted = idx < stageIdx
                       const isCurrent = idx === stageIdx
                       const isFuture = idx > stageIdx
+                      const isHandoverStage = stage === 'handover' && isCurrent
 
                       return (
                         <div key={stage} className="flex items-center">
@@ -245,13 +285,16 @@ export default function Rooms() {
                               className={cn(
                                 'flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold transition-all',
                                 isCompleted && 'bg-emerald-500 text-white',
-                                isCurrent && 'bg-emerald-400 text-white animate-progress-pulse',
+                                isCurrent && !isHandoverStage && 'bg-emerald-400 text-white animate-progress-pulse',
+                                isHandoverStage && 'bg-cyan-400 text-white animate-progress-pulse',
                                 isFuture && 'bg-gray-200 text-gray-400',
                                 !schedule && 'bg-gray-100 text-gray-300'
                               )}
                             >
                               {isCompleted ? (
                                 <CheckCircle2 className="h-3.5 w-3.5" />
+                              ) : isHandoverStage ? (
+                                <FileCheck className="h-3.5 w-3.5" />
                               ) : (
                                 idx + 1
                               )}
@@ -260,7 +303,8 @@ export default function Rooms() {
                               className={cn(
                                 'whitespace-nowrap text-[10px]',
                                 isCompleted && 'text-emerald-600',
-                                isCurrent && 'text-emerald-500 font-medium',
+                                isCurrent && !isHandoverStage && 'text-emerald-500 font-medium',
+                                isHandoverStage && 'text-cyan-600 font-medium',
                                 isFuture && 'text-gray-400',
                                 !schedule && 'text-gray-300'
                               )}
@@ -315,59 +359,70 @@ export default function Rooms() {
                       <AlertTriangle className="h-3.5 w-3.5" />
                       反馈延误
                     </button>
-                    <div className="relative flex-1">
+                    {isHandover ? (
                       <button
                         type="button"
-                        onClick={() =>
-                          setSupportPopoverRoomId(
-                            supportPopoverRoomId === room.id ? null : room.id
-                          )
-                        }
-                        className="btn-secondary flex w-full items-center justify-center gap-1"
+                        onClick={() => setHandoverModalSchedule(schedule)}
+                        className="btn-primary flex flex-1 items-center justify-center gap-1 bg-cyan-600 hover:bg-cyan-700"
                       >
-                        <Send className="h-3.5 w-3.5" />
-                        调派支援
+                        <FileCheck className="h-3.5 w-3.5" />
+                        交接清单
                       </button>
-                      {supportPopoverRoomId === room.id && (
-                        <div className="absolute bottom-full left-0 z-30 mb-2 w-64 rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
-                          <div className="mb-2 flex items-center justify-between">
-                            <span className="text-xs font-medium text-navy-800">空闲协助人员</span>
-                            <button
-                              type="button"
-                              onClick={() => setSupportPopoverRoomId(null)}
-                              className="text-gray-400 hover:text-gray-600"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                          {eligibleAssistants.length === 0 ? (
-                            <p className="py-2 text-center text-xs text-gray-400">暂无符合条件的空闲人员</p>
-                          ) : (
-                            <ul className="space-y-1">
-                              {eligibleAssistants.map((ast) => (
-                                <li key={ast.id}>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDispatch(ast.id)}
-                                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-emerald-50"
-                                  >
-                                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-navy-100 text-xs font-medium text-navy-700">
-                                      {ast.name.slice(-1)}
-                                    </div>
-                                    <div>
-                                      <div className="text-xs font-medium text-navy-800">{ast.name}</div>
-                                      <div className="text-[10px] text-gray-400">
-                                        {ast.qualifications.map((q) => QUALIFICATION_LABELS[q]).join('、')}
+                    ) : (
+                      <div className="relative flex-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSupportPopoverRoomId(
+                              supportPopoverRoomId === room.id ? null : room.id
+                            )
+                          }
+                          className="btn-secondary flex w-full items-center justify-center gap-1"
+                        >
+                          <Send className="h-3.5 w-3.5" />
+                          调派支援
+                        </button>
+                        {supportPopoverRoomId === room.id && (
+                          <div className="absolute bottom-full left-0 z-30 mb-2 w-64 rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
+                            <div className="mb-2 flex items-center justify-between">
+                              <span className="text-xs font-medium text-navy-800">空闲协助人员</span>
+                              <button
+                                type="button"
+                                onClick={() => setSupportPopoverRoomId(null)}
+                                className="text-gray-400 hover:text-gray-600"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                            {eligibleAssistants.length === 0 ? (
+                              <p className="py-2 text-center text-xs text-gray-400">暂无符合条件的空闲人员</p>
+                            ) : (
+                              <ul className="space-y-1">
+                                {eligibleAssistants.map((ast) => (
+                                  <li key={ast.id}>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDispatch(ast.id)}
+                                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-emerald-50"
+                                    >
+                                      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-navy-100 text-xs font-medium text-navy-700">
+                                        {ast.name.slice(-1)}
                                       </div>
-                                    </div>
-                                  </button>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                                      <div>
+                                        <div className="text-xs font-medium text-navy-800">{ast.name}</div>
+                                        <div className="text-[10px] text-gray-400">
+                                          {ast.qualifications.map((q) => QUALIFICATION_LABELS[q]).join('、')}
+                                        </div>
+                                      </div>
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -441,6 +496,106 @@ export default function Rooms() {
                 <MessageSquare className="h-4 w-4" />
                 提交延误
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {handoverModalSchedule && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="mx-4 w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FileCheck className="h-5 w-5 text-cyan-600" />
+                <h2 className="text-lg font-semibold text-navy-900">术后交接清单</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHandoverModalSchedule(null)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mb-4 rounded-lg bg-cyan-50 border border-cyan-200 p-3 text-sm">
+              <div className="font-medium text-cyan-800">{handoverModalSchedule.customerName}</div>
+              <div className="text-cyan-600 text-xs mt-0.5">
+                {getDoctorById(handoverModalSchedule.doctorId)?.name} ·{' '}
+                {getProjectById(handoverModalSchedule.projectId)?.name} ·{' '}
+                {handoverModalSchedule.startTime}-{handoverModalSchedule.endTime}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {(['customer_departed', 'consumables_collected', 'photos_archived'] as const).map((key) => {
+                const checked = handoverModalSchedule.handover?.[key] ?? false
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => handleToggleHandoverItem(key)}
+                    className={cn(
+                      'w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left',
+                      checked
+                        ? 'bg-emerald-50 border-emerald-200'
+                        : 'bg-white border-warm-200 hover:border-emerald-300'
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        'w-5 h-5 rounded flex items-center justify-center shrink-0 transition-all',
+                        checked ? 'bg-emerald-500 text-white' : 'border-2 border-warm-300'
+                      )}
+                    >
+                      {checked && <Check size={12} />}
+                    </div>
+                    <span className={cn('text-sm', checked ? 'text-emerald-700 font-medium' : 'text-navy-700')}>
+                      {HANDOVER_ITEM_LABELS[key]}
+                    </span>
+                  </button>
+                )
+              })}
+
+              <div>
+                <label className="block text-sm font-medium text-navy-700 mb-1.5">
+                  {HANDOVER_ITEM_LABELS.review_note}
+                </label>
+                <textarea
+                  rows={3}
+                  value={handoverModalSchedule.handover?.review_note ?? ''}
+                  onChange={(e) => handleToggleHandoverItem('review_note', e.target.value)}
+                  placeholder="记录台次复盘重点：顾客特殊反应、操作细节、耗材消耗异常…"
+                  className="w-full resize-none rounded-lg border border-warm-200 px-3 py-2 text-sm text-navy-800 placeholder:text-gray-400 focus:border-emerald-400 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-between items-center">
+              <span className={cn('text-xs', handoverAllDone ? 'text-emerald-600' : 'text-gray-400')}>
+                {handoverAllDone ? '已完成全部交接项' : '请完成所有必选项后再释放房间'}
+              </span>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setHandoverModalSchedule(null)}
+                  className="btn-secondary"
+                >
+                  稍后处理
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCompleteHandover}
+                  disabled={!handoverAllDone}
+                  className={cn(
+                    'btn-primary flex items-center gap-1',
+                    !handoverAllDone && 'opacity-50 cursor-not-allowed'
+                  )}
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  完成交接
+                </button>
+              </div>
             </div>
           </div>
         </div>

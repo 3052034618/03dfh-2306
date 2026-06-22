@@ -12,6 +12,15 @@ export type ConsumableStatus = 'safe' | 'warning' | 'out_of_stock'
 
 export type ProjectCategory = 'eye_nose' | 'laser' | 'injection'
 
+export type HandoverItemKey = 'customer_departed' | 'consumables_collected' | 'photos_archived' | 'review_note'
+
+export interface HandoverItems {
+  customer_departed: boolean
+  consumables_collected: boolean
+  photos_archived: boolean
+  review_note?: string
+}
+
 export interface Doctor {
   id: string
   name: string
@@ -51,6 +60,8 @@ export interface Schedule {
   isOvertime: boolean
   isSwapped: boolean
   anomalyNotes: string[]
+  handover?: HandoverItems
+  handoverCompletedAt?: string
 }
 
 export interface Project {
@@ -73,11 +84,27 @@ export interface Consumable {
 
 export interface Notification {
   id: string
-  type: 'assignment' | 'delay' | 'consumable' | 'dispatch'
+  type: 'assignment' | 'delay' | 'consumable' | 'dispatch' | 'handover'
   message: string
   targetId: string
   timestamp: string
   read: boolean
+  scheduleId?: string
+}
+
+export const HANDOVER_ITEM_LABELS: Record<HandoverItemKey, string> = {
+  customer_departed: '顾客离院确认',
+  consumables_collected: '耗材回收清点',
+  photos_archived: '照片资料归档',
+  review_note: '复盘备注',
+}
+
+export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
+  assignment: '排班通知',
+  dispatch: '调派通知',
+  delay: '延误通知',
+  consumable: '耗材通知',
+  handover: '交接通知',
 }
 
 export const QUALIFICATION_LABELS: Record<Qualification, string> = {

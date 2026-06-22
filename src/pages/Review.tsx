@@ -23,10 +23,14 @@ import {
   User,
   LayoutGrid,
   Stethoscope,
+  FileCheck,
+  Check,
+  CheckCircle2,
+  Circle,
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
-import { ROOM_TYPE_LABELS, PROGRESS_LABELS } from '@/types'
+import { ROOM_TYPE_LABELS, PROGRESS_LABELS, HANDOVER_ITEM_LABELS } from '@/types'
 
 const CHART_COLORS = ['#3b5998', '#ff6b6b', '#10b981', '#f59e0b']
 
@@ -400,6 +404,98 @@ export default function Review() {
               ))}
               {morningRoomSummary.length === 0 && (
                 <p className="col-span-2 text-center text-gray-400 py-4 text-sm">当日无房间使用</p>
+              )}
+            </div>
+          </div>
+
+          <div className="card rounded-lg p-5">
+            <h3 className="mb-4 text-sm font-semibold text-navy-700 flex items-center gap-2">
+              <FileCheck size={16} className="text-cyan-500" />
+              术后交接情况
+            </h3>
+            <div className="grid grid-cols-3 gap-4 mb-4">
+              <div className="bg-cyan-50 rounded-lg p-3 text-center">
+                <p className="text-xs text-navy-500">交接中台次</p>
+                <p className="text-2xl font-bold text-cyan-600">
+                  {filtered.filter((s) => s.progress === 'handover' && !s.handoverCompletedAt).length}
+                </p>
+              </div>
+              <div className="bg-emerald-50 rounded-lg p-3 text-center">
+                <p className="text-xs text-navy-500">已完成交接</p>
+                <p className="text-2xl font-bold text-emerald-600">
+                  {filtered.filter((s) => s.handoverCompletedAt).length}
+                </p>
+              </div>
+              <div className="bg-warm-100 rounded-lg p-3 text-center">
+                <p className="text-xs text-navy-500">进行中</p>
+                <p className="text-2xl font-bold text-navy-700">
+                  {filtered.filter((s) => s.progress !== 'handover').length}
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {filtered
+                .filter((s) => s.progress === 'handover')
+                .map((s) => {
+                  const doctor = getDoctorById(s.doctorId)
+                  const project = getProjectById(s.projectId)
+                  const room = getRoomById(s.roomId)
+                  const done = !!s.handoverCompletedAt
+                  const h = s.handover
+                  return (
+                    <div
+                      key={s.id}
+                      className={cn(
+                        'p-3 rounded-lg border',
+                        done ? 'bg-emerald-50 border-emerald-200' : 'bg-cyan-50 border-cyan-200'
+                      )}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-semibold text-navy-800 truncate">
+                            {doctor?.name} · {project?.name}
+                          </span>
+                          <span className="text-xs text-gray-400 shrink-0">
+                            {room?.name} · {s.startTime}-{s.endTime}
+                          </span>
+                        </div>
+                        {done ? (
+                          <span className="badge rounded-full bg-emerald-100 text-emerald-700 text-[10px] px-2 py-0.5 flex items-center gap-1 shrink-0">
+                            <CheckCircle2 size={10} />
+                            已完成
+                          </span>
+                        ) : (
+                          <span className="badge rounded-full bg-cyan-100 text-cyan-700 text-[10px] px-2 py-0.5 shrink-0">
+                            交接中
+                          </span>
+                        )}
+                      </div>
+                      {h && (
+                        <div className="grid grid-cols-3 gap-2 text-[10px]">
+                          <div className={cn('flex items-center gap-1', h.customer_departed ? 'text-emerald-600' : 'text-gray-400')}>
+                            {h.customer_departed ? <Check size={10} /> : <Circle size={10} />}
+                            {HANDOVER_ITEM_LABELS.customer_departed}
+                          </div>
+                          <div className={cn('flex items-center gap-1', h.consumables_collected ? 'text-emerald-600' : 'text-gray-400')}>
+                            {h.consumables_collected ? <Check size={10} /> : <Circle size={10} />}
+                            {HANDOVER_ITEM_LABELS.consumables_collected}
+                          </div>
+                          <div className={cn('flex items-center gap-1', h.photos_archived ? 'text-emerald-600' : 'text-gray-400')}>
+                            {h.photos_archived ? <Check size={10} /> : <Circle size={10} />}
+                            {HANDOVER_ITEM_LABELS.photos_archived}
+                          </div>
+                        </div>
+                      )}
+                      {h?.review_note && (
+                        <p className="mt-2 text-[10px] text-navy-500 bg-white/60 rounded px-2 py-1">
+                          📝 {h.review_note}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
+              {filtered.filter((s) => s.progress === 'handover').length === 0 && (
+                <p className="text-center text-gray-400 py-3 text-sm">当日暂无交接中台次</p>
               )}
             </div>
           </div>

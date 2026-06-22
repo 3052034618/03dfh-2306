@@ -15,12 +15,15 @@ import {
   Check,
   GripVertical,
   ChevronDown,
+  BarChart3,
+  Stethoscope,
+  Home,
 } from 'lucide-react'
 import { format, addDays, startOfWeek, isSameDay, parseISO, differenceInMinutes } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
-import type { Schedule, ProjectCategory, Qualification, Assistant } from '@/types'
+import type { Schedule, ProjectCategory, Qualification, Assistant, RoomType } from '@/types'
 import {
   QUALIFICATION_LABELS,
   PROJECT_CATEGORY_LABELS,
@@ -42,7 +45,9 @@ const CATEGORY_BADGE: Record<ProjectCategory, string> = {
   injection: 'badge badge-injection',
 }
 
-type ViewMode = 'week' | 'day'
+type ViewMode = 'week' | 'day' | 'overview'
+
+type OverviewTab = 'doctor' | 'room' | 'assistant'
 
 interface FormData {
   doctorId: string
@@ -176,6 +181,7 @@ export default function Calendar() {
 
   const [currentDate, setCurrentDate] = useState(new Date())
   const [viewMode, setViewMode] = useState<ViewMode>('week')
+  const [overviewTab, setOverviewTab] = useState<OverviewTab>('doctor')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedSchedule, setSelectedSchedule] = useState<Schedule | null>(null)
   const [form, setForm] = useState<FormData>(EMPTY_FORM)
@@ -247,6 +253,50 @@ export default function Calendar() {
   const goToNext = useCallback(() => {
     setCurrentDate((d) => addDays(d, viewMode === 'week' ? 7 : 1))
   }, [viewMode])
+
+  const overviewDateStr = useMemo(() => format(currentDate, 'yyyy-MM-dd'), [currentDate])
+  const overviewSchedules = useMemo(() => schedulesByDate.get(overviewDateStr) ?? [], [schedulesByDate, overviewDateStr])
+
+  const hasOverlap = useCallback((schedules: Schedule[], current: Schedule): boolean => {
+    return schedules.some(
+      (s) => s.id !== current.id && isTimeOverlap(current.startTime, current.endTime, s.startTime, s.endTime)
+    )
+  }, [])
+
+  const schedulesByDoctor = useMemo(() => {
+    const map = new Map<string, Schedule[]>()
+    doctors.forEach((d) => map.set(d.id, []))
+    overviewSchedules.forEach((s) => {
+      const list = map.get(s.doctorId) ?? []
+      list.push(s)
+      map.set(s.doctorId, list)
+    })
+    return map
+  }, [doctors, overviewSchedules])
+
+  const schedulesByRoom = useMemo(() => {
+    const map = new Map<string, Schedule[]>()
+    rooms.forEach((r) => map.set(r.id, []))
+    overviewSchedules.forEach((s) => {
+      const list = map.get(s.roomId) ?? []
+      list.push(s)
+      map.set(s.roomId, list)
+    })
+    return map
+  }, [rooms, overviewSchedules])
+
+  const schedulesByAssistant = useMemo(() => {
+    const map = new Map<string, Schedule[]>()
+    assistants.forEach((a) => map.set(a.id, []))
+    overviewSchedules.forEach((s) => {
+      s.assistantIds.forEach((aid) => {
+        const list = map.get(aid) ?? []
+        list.push(s)
+        map.set(aid, list)
+      })
+    })
+    return map
+  }, [assistants, overviewSchedules])
 
   const goToToday = useCallback(() => {
     setCurrentDate(new Date())
@@ -575,6 +625,16 @@ export default function Calendar() {
                   <LayoutList size={14} />
                   日视图
                 </button>
+                <button
+                  onClick={() => setViewMode('overview')}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200',
+                    viewMode === 'overview' ? 'bg-white text-navy-800 shadow-sm' : 'text-navy-400 hover:text-navy-600'
+                  )}
+                >
+                  <BarChart3 size={14} />
+                  资源总览
+                </button>
               </div>
             </div>
 
@@ -616,89 +676,115 @@ export default function Calendar() {
         </div>
 
         {/* Calendar Grid */}
-        <div className="flex-1 overflow-auto bg-warm-50">
-          <div className="flex min-w-max">
-            {/* Time Column */}
-            <div className="w-16 shrink-0 sticky left-0 z-20 bg-warm-50">
-              <div className="h-12 border-b border-warm-200/60" />
-              {HOURS.map((hour) => (
-                <div key={hour} className="h-16 border-b border-warm-100 flex items-start justify-end pr-2 pt-0">
-                  <span className="text-[11px] text-navy-300 font-medium -mt-2">
-                    {String(hour).padStart(2, '0')}:00
-                  </span>
-                </div>
-              ))}
-            </div>
+        {viewMode === 'overview' ? (
+          <OverviewView
+            overviewTab={overviewTab}
+            setOverviewTab={setOverviewTab}
+            overviewDateStr={overviewDateStr}
+            isToday={isSameDay(currentDate, new Date())}
+            doctors={doctors}
+            rooms={rooms}
+            assistants={assistants}
+            schedulesByDoctor={schedulesByDoctor}
+            schedulesByRoom={schedulesByRoom}
+            schedulesByAssistant={schedulesByAssistant}
+            hasOverlap={hasOverlap}
+            getScheduleStyle={getScheduleStyle}
+            getDoctorById={getDoctorById}
+            getProjectById={getProjectById}
+            getRoomById={getRoomById}
+            getAssistantById={getAssistantById}
+            openScheduleDetail={openScheduleDetail}
+            openAddDrawer={openAddDrawer}
+            dropTargetScheduleId={dropTargetScheduleId}
+            setDropTargetScheduleId={setDropTargetScheduleId}
+            handleDropOnSchedule={handleDropOnSchedule}
+          />
+        ) : (
+          <div className="flex-1 overflow-auto bg-warm-50">
+            <div className="flex min-w-max">
+              {/* Time Column */}
+              <div className="w-16 shrink-0 sticky left-0 z-20 bg-warm-50">
+                <div className="h-12 border-b border-warm-200/60" />
+                {HOURS.map((hour) => (
+                  <div key={hour} className="h-16 border-b border-warm-100 flex items-start justify-end pr-2 pt-0">
+                    <span className="text-[11px] text-navy-300 font-medium -mt-2">
+                      {String(hour).padStart(2, '0')}:00
+                    </span>
+                  </div>
+                ))}
+              </div>
 
-            {/* Day Columns */}
-            {displayDays.map((day) => {
-              const dateStr = format(day, 'yyyy-MM-dd')
-              const daySchedules = schedulesByDate.get(dateStr) ?? []
-              const isToday = isSameDay(day, new Date())
+              {/* Day Columns */}
+              {displayDays.map((day) => {
+                const dateStr = format(day, 'yyyy-MM-dd')
+                const daySchedules = schedulesByDate.get(dateStr) ?? []
+                const isToday = isSameDay(day, new Date())
 
-              return (
-                <div
-                  key={dateStr}
-                  className={cn(
-                    'flex-1 min-w-[140px] border-r border-warm-200/60 last:border-r-0',
-                    viewMode === 'day' && 'min-w-[300px]'
-                  )}
-                >
-                  {/* Day Header */}
+                return (
                   <div
+                    key={dateStr}
                     className={cn(
-                      'h-12 flex flex-col items-center justify-center border-b border-warm-200/60 sticky top-0 z-10',
-                      isToday ? 'bg-coral-50' : 'bg-white'
+                      'flex-1 min-w-[140px] border-r border-warm-200/60 last:border-r-0',
+                      viewMode === 'day' && 'min-w-[300px]'
                     )}
                   >
-                    <span className={cn('text-[10px] font-medium', isToday ? 'text-coral-500' : 'text-navy-300')}>
-                      {format(day, 'EEE', { locale: zhCN })}
-                    </span>
-                    <span
+                    {/* Day Header */}
+                    <div
                       className={cn(
-                        'text-sm font-bold',
-                        isToday ? 'text-coral-600' : 'text-navy-700'
+                        'h-12 flex flex-col items-center justify-center border-b border-warm-200/60 sticky top-0 z-10',
+                        isToday ? 'bg-coral-50' : 'bg-white'
                       )}
                     >
-                      {format(day, 'd')}
-                    </span>
-                  </div>
+                      <span className={cn('text-[10px] font-medium', isToday ? 'text-coral-500' : 'text-navy-300')}>
+                        {format(day, 'EEE', { locale: zhCN })}
+                      </span>
+                      <span
+                        className={cn(
+                          'text-sm font-bold',
+                          isToday ? 'text-coral-600' : 'text-navy-700'
+                        )}
+                      >
+                        {format(day, 'd')}
+                      </span>
+                    </div>
 
-                  {/* Time Slots */}
-                  <div className="relative">
-                    {HOURS.map((hour) => (
-                      <div
-                        key={hour}
-                        className="h-16 border-b border-warm-100 hover:bg-navy-50/30 transition-colors cursor-pointer"
-                        onClick={() => openAddDrawer(dateStr, hour)}
-                      />
-                    ))}
+                    {/* Time Slots */}
+                    <div className="relative">
+                      {HOURS.map((hour) => (
+                        <div
+                          key={hour}
+                          className="h-16 border-b border-warm-100 hover:bg-navy-50/30 transition-colors cursor-pointer"
+                          onClick={() => openAddDrawer(dateStr, hour)}
+                        />
+                      ))}
 
-                    {/* Current Time Indicator */}
-                    {isToday && (() => {
-                      const now = new Date()
-                      const h = now.getHours()
-                      const m = now.getMinutes()
-                      if (h < 8 || h >= 18) return null
-                      const top = (h - 8) * 64 + (m / 60) * 64
-                      return (
-                        <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top: `${top}px` }}>
-                          <div className="flex items-center">
-                            <div className="w-2 h-2 rounded-full bg-coral-400 -ml-1" />
-                            <div className="flex-1 h-px bg-coral-400" />
+                      {/* Current Time Indicator */}
+                      {isToday && (() => {
+                        const now = new Date()
+                        const h = now.getHours()
+                        const m = now.getMinutes()
+                        if (h < 8 || h >= 18) return null
+                        const top = (h - 8) * 64 + (m / 60) * 64
+                        return (
+                          <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top: `${top}px` }}>
+                            <div className="flex items-center">
+                              <div className="w-2 h-2 rounded-full bg-coral-400 -ml-1" />
+                              <div className="flex-1 h-px bg-coral-400" />
+                            </div>
                           </div>
-                        </div>
-                      )
-                    })()}
+                        )
+                      })()}
 
-                    {/* Schedule Blocks */}
-                    {daySchedules.map(renderScheduleBlock)}
+                      {/* Schedule Blocks */}
+                      {daySchedules.map(renderScheduleBlock)}
+                    </div>
                   </div>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Right Sidebar - Draggable Assistants */}
@@ -1064,6 +1150,301 @@ export default function Calendar() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+interface OverviewViewProps {
+  overviewTab: OverviewTab
+  setOverviewTab: (tab: OverviewTab) => void
+  overviewDateStr: string
+  isToday: boolean
+  doctors: { id: string; name: string; title: string }[]
+  rooms: { id: string; name: string; type: RoomType }[]
+  assistants: Assistant[]
+  schedulesByDoctor: Map<string, Schedule[]>
+  schedulesByRoom: Map<string, Schedule[]>
+  schedulesByAssistant: Map<string, Schedule[]>
+  hasOverlap: (schedules: Schedule[], current: Schedule) => boolean
+  getScheduleStyle: (schedule: Schedule) => { bg: string; border: string; text: string; dot: string }
+  getDoctorById: (id: string) => { id: string; name: string; title: string } | undefined
+  getProjectById: (id: string) => { id: string; name: string; category: ProjectCategory } | undefined
+  getRoomById: (id: string) => { id: string; name: string } | undefined
+  getAssistantById: (id: string) => Assistant | undefined
+  openScheduleDetail: (schedule: Schedule) => void
+  openAddDrawer: (date?: string, hour?: number) => void
+  dropTargetScheduleId: string | null
+  setDropTargetScheduleId: (id: string | null) => void
+  handleDropOnSchedule: (e: React.DragEvent, scheduleId: string) => void
+}
+
+function OverviewView({
+  overviewTab,
+  setOverviewTab,
+  overviewDateStr,
+  isToday,
+  doctors,
+  rooms,
+  assistants,
+  schedulesByDoctor,
+  schedulesByRoom,
+  schedulesByAssistant,
+  hasOverlap,
+  getScheduleStyle,
+  getDoctorById,
+  getProjectById,
+  getRoomById,
+  getAssistantById,
+  openScheduleDetail,
+  openAddDrawer,
+  dropTargetScheduleId,
+  setDropTargetScheduleId,
+  handleDropOnSchedule,
+}: OverviewViewProps) {
+  const getResources = () => {
+    switch (overviewTab) {
+      case 'doctor':
+        return doctors.map((d) => ({
+          id: d.id,
+          name: d.name,
+          subtitle: d.title,
+          icon: <Stethoscope size={14} className="text-navy-500" />,
+          schedules: schedulesByDoctor.get(d.id) ?? [],
+        }))
+      case 'room':
+        return rooms.map((r) => ({
+          id: r.id,
+          name: r.name,
+          subtitle: r.type === 'operating' ? '手术室' : r.type === 'laser' ? '光电室' : '注射室',
+          icon: <Home size={14} className="text-navy-500" />,
+          schedules: schedulesByRoom.get(r.id) ?? [],
+        }))
+      case 'assistant':
+        return assistants.map((a) => ({
+          id: a.id,
+          name: a.name,
+          subtitle: ASSISTANT_STATUS_LABELS[a.status],
+          icon: <User size={14} className="text-navy-500" />,
+          schedules: schedulesByAssistant.get(a.id) ?? [],
+        }))
+    }
+  }
+
+  const resources = getResources()
+
+  return (
+    <div className="flex-1 overflow-auto bg-warm-50 flex flex-col">
+      {/* Dimension Tabs */}
+      <div className="px-6 py-3 bg-white border-b border-warm-200/60 shrink-0 sticky top-0 z-30">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setOverviewTab('doctor')}
+            className={cn(
+              'flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
+              overviewTab === 'doctor'
+                ? 'bg-navy-800 text-white shadow-sm'
+                : 'bg-warm-100 text-navy-500 hover:bg-warm-200'
+            )}
+          >
+            <Stethoscope size={14} />
+            医生
+          </button>
+          <button
+            onClick={() => setOverviewTab('room')}
+            className={cn(
+              'flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
+              overviewTab === 'room'
+                ? 'bg-navy-800 text-white shadow-sm'
+                : 'bg-warm-100 text-navy-500 hover:bg-warm-200'
+            )}
+          >
+            <Home size={14} />
+            房间
+          </button>
+          <button
+            onClick={() => setOverviewTab('assistant')}
+            className={cn(
+              'flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
+              overviewTab === 'assistant'
+                ? 'bg-navy-800 text-white shadow-sm'
+                : 'bg-warm-100 text-navy-500 hover:bg-warm-200'
+            )}
+          >
+            <Users size={14} />
+            医助
+          </button>
+          <div className="flex-1" />
+          <div className="flex items-center gap-3 text-xs text-navy-400">
+            <div className="flex items-center gap-1">
+              <div className="w-3 h-3 rounded ring-2 ring-coral-500 bg-coral-50" />
+              <span>时间冲突</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Timeline Grid */}
+      <div className="flex-1 overflow-auto">
+        <div className="min-w-max">
+          <div className="flex">
+            {/* Resource Name Column */}
+            <div className="w-40 shrink-0 sticky left-0 z-20 bg-warm-50">
+              <div className="h-10 border-b border-warm-200/60 bg-white" />
+              {resources.map((res) => (
+                <div
+                  key={res.id}
+                  className="h-16 border-b border-warm-100 flex items-center gap-2 px-3 bg-white"
+                >
+                  <div className="w-7 h-7 rounded-full bg-navy-100 flex items-center justify-center shrink-0">
+                    {res.icon}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-navy-800 truncate">{res.name}</div>
+                    <div className="text-[10px] text-navy-400 truncate">{res.subtitle}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Timeline Column */}
+            <div className="flex-1 relative">
+              {/* Hour Headers */}
+              <div className="flex sticky top-0 z-10 bg-white">
+                {HOURS.map((hour) => (
+                  <div
+                    key={hour}
+                    className="h-10 border-b border-warm-200/60 border-r border-warm-100 flex items-center justify-center"
+                    style={{ width: '96px' }}
+                  >
+                    <span className="text-[11px] text-navy-400 font-medium">
+                      {String(hour).padStart(2, '0')}:00
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Resource Rows with Timeline */}
+              {resources.map((res) => (
+                <div key={res.id} className="relative flex" style={{ height: '64px' }}>
+                  {HOURS.map((hour) => (
+                    <div
+                      key={hour}
+                      className="h-16 border-b border-warm-100 border-r border-warm-100 hover:bg-navy-50/30 transition-colors cursor-pointer"
+                      style={{ width: '96px' }}
+                      onClick={() => openAddDrawer(overviewDateStr, hour)}
+                    />
+                  ))}
+
+                  {/* Current Time Indicator */}
+                  {isToday && (() => {
+                    const now = new Date()
+                    const h = now.getHours()
+                    const m = now.getMinutes()
+                    if (h < 8 || h >= 18) return null
+                    const left = ((h - 8) + m / 60) * 96
+                    return (
+                      <div className="absolute top-0 bottom-0 z-20 pointer-events-none" style={{ left: `${left}px` }}>
+                        <div className="flex flex-col items-center h-full">
+                          <div className="w-2 h-2 rounded-full bg-coral-400 -mt-1" />
+                          <div className="w-px flex-1 bg-coral-400" />
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* Schedule Blocks */}
+                  {res.schedules.map((s) => {
+                    const style = getScheduleStyle(s)
+                    const project = getProjectById(s.projectId)
+                    const doctor = getDoctorById(s.doctorId)
+                    const room = getRoomById(s.roomId)
+                    const left = ((Number(s.startTime.split(':')[0]) - 8) + Number(s.startTime.split(':')[1]) / 60) * 96
+                    const width = (
+                      (Number(s.endTime.split(':')[0]) - Number(s.startTime.split(':')[0])) +
+                      (Number(s.endTime.split(':')[1]) - Number(s.startTime.split(':')[1])) / 60
+                    ) * 96
+                    const isDropTarget = dropTargetScheduleId === s.id
+                    const isConflicted = hasOverlap(res.schedules, s)
+
+                    const assignedAssistants = s.assistantIds
+                      .map((id) => getAssistantById(id))
+                      .filter((a): a is Assistant => a !== undefined)
+
+                    return (
+                      <div
+                        key={s.id}
+                        data-schedule-id={s.id}
+                        onClick={() => openScheduleDetail(s)}
+                        onDragOver={(e) => {
+                          e.preventDefault()
+                          e.dataTransfer.dropEffect = 'copy'
+                          if (dropTargetScheduleId !== s.id) {
+                            setDropTargetScheduleId(s.id)
+                          }
+                        }}
+                        onDragLeave={(e) => {
+                          const rect = e.currentTarget.getBoundingClientRect()
+                          const x = e.clientX
+                          const y = e.clientY
+                          if (
+                            x <= rect.left ||
+                            x >= rect.right ||
+                            y <= rect.top ||
+                            y >= rect.bottom
+                          ) {
+                            setDropTargetScheduleId(null)
+                          }
+                        }}
+                        onDrop={(e) => handleDropOnSchedule(e, s.id)}
+                        className={cn(
+                          'absolute top-1 bottom-1 rounded-lg border-l-4 px-2 py-1 cursor-pointer transition-all duration-150 overflow-hidden',
+                          style.bg,
+                          style.border,
+                          style.text,
+                          isConflicted && 'ring-2 ring-coral-500 border-l-coral-500 z-10',
+                          isDropTarget && 'ring-2 ring-emerald-400 shadow-lg z-20 scale-[1.01]',
+                          !isConflicted && !isDropTarget && 'hover:shadow-sm hover:z-10'
+                        )}
+                        style={{ left: `${left + 2}px`, width: `${Math.max(width - 4, 40)}px`, top: '4px', height: '56px' }}
+                      >
+                        <div className="flex items-center gap-1 text-xs font-semibold truncate">
+                          <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', style.dot)} />
+                          <span className="truncate">{project?.name}</span>
+                          {isConflicted && (
+                            <AlertTriangle size={10} className="text-coral-500 shrink-0" />
+                          )}
+                        </div>
+                        <div className="text-[10px] opacity-80 truncate mt-0.5">
+                          {s.customerName} · {doctor?.name}
+                        </div>
+                        <div className="text-[10px] opacity-70 truncate mt-0.5">
+                          <Clock size={10} className="inline mr-0.5 -mt-px" />
+                          {s.startTime}-{s.endTime} · {room?.name}
+                        </div>
+                        {assignedAssistants.length > 0 && width > 120 && (
+                          <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                            {assignedAssistants.slice(0, 2).map((a) => (
+                              <span
+                                key={a.id}
+                                className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] rounded-full bg-white/80 text-navy-600"
+                              >
+                                {a.name}
+                              </span>
+                            ))}
+                            {assignedAssistants.length > 2 && (
+                              <span className="text-[9px] text-navy-500">+{assignedAssistants.length - 2}</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
