@@ -1,7 +1,13 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Doctor, Assistant, Room, Schedule, Project, Consumable, Notification, ProgressStage, AssistantStatus } from '@/types'
+import type { Doctor, Assistant, Room, Schedule, Project, Consumable, Notification, ProgressStage, AssistantStatus, RoomStatus } from '@/types'
 import { mockDoctors, mockAssistants, mockRooms, mockSchedules, mockProjects, mockConsumables, mockNotifications } from '@/data/mock'
+
+function progressToRoomStatus(progress: ProgressStage): RoomStatus {
+  if (progress === 'handover') return 'handover'
+  if (progress === 'operating' || progress === 'doctor_in') return 'in_progress'
+  return 'preparing'
+}
 
 interface AppState {
   doctors: Doctor[]
@@ -23,13 +29,16 @@ interface AppState {
   removeAssistant: (scheduleId: string, assistantId: string) => void
   dispatchSupport: (scheduleId: string, assistantId: string) => void
 
-  updateRoomStatus: (id: string, status: Room['status']) => void
+  updateRoomStatus: (id: string, status: RoomStatus) => void
+  syncRoomStatus: (roomId: string) => void
 
   updateConsumable: (id: string, data: Partial<Consumable>) => void
   addConsumableRequest: (consumableId: string, note: string) => void
 
   addNotification: (notification: Notification) => void
   markNotificationRead: (id: string) => void
+  markAllNotificationsRead: () => void
+  markNotificationsReadByTarget: (targetId: string) => void
 
   getDoctorById: (id: string) => Doctor | undefined
   getAssistantById: (id: string) => Assistant | undefined
@@ -51,7 +60,25 @@ export const useStore = create<AppState>()(
       notifications: mockNotifications,
 
       addSchedule: (schedule) =>
-        set((state) => ({ schedules: [...state.schedules, schedule] })),
+        set((state) => {
+          const updatedAssistants = state.assistants.map((a) =>
+            schedule.assistantIds.includes(a.id)
+              ? { ...a, status: 'busy' as AssistantStatus }
+              : a
+          )
+
+          const updatedRooms = state.rooms.map((r) =>
+            r.id === schedule.roomId
+              ? { ...r, status: progressToRoomStatus(schedule.progress) }
+              : r
+          )
+
+          return {
+            schedules: [...state.schedules, schedule],
+            assistants: updatedAssistants,
+            rooms: updatedRooms,
+          }
+        }),
 
       updateSchedule: (id, data) =>
         set((state) => ({
@@ -61,16 +88,67 @@ export const useStore = create<AppState>()(
         })),
 
       deleteSchedule: (id) =>
-        set((state) => ({
-          schedules: state.schedules.filter((s) => s.id !== id),
-        })),
+        set((state) => {
+          const schedule = state.schedules.find((s) => s.id === id)
+          if (!schedule) return { schedules: state.schedules.filter((s) => s.id !== id) }
+
+          const updatedAssistants = state.assistants.map((a) => {
+            if (!schedule.assistantIds.includes(a.id)) return a
+            const stillInOther = state.schedules.some(
+              (s) => s.id !== id && s.assistantIds.includes(a.id) && s.progress !== 'handover'
+            )
+            return stillInOther ? a : { ...a, status: 'idle' as AssistantStatus }
+          })
+
+          const hasOtherSchedules = state.schedules.some(
+            (s) => s.id !== id && s.roomId === schedule.roomId && s.progress !== 'handover'
+          )
+          const updatedRooms = state.rooms.map((r) =>
+            r.id === schedule.roomId && !hasOtherSchedules
+              ? { ...r, status: 'idle' as RoomStatus }
+              : r
+          )
+
+          return {
+            schedules: state.schedules.filter((s) => s.id !== id),
+            assistants: updatedAssistants,
+            rooms: updatedRooms,
+          }
+        }),
 
       updateScheduleProgress: (id, progress) =>
-        set((state) => ({
-          schedules: state.schedules.map((s) =>
+        set((state) => {
+          const schedule = state.schedules.find((s) => s.id === id)
+          const updatedSchedules = state.schedules.map((s) =>
             s.id === id ? { ...s, progress } : s
-          ),
-        })),
+          )
+
+          let updatedAssistants = state.assistants
+          if (progress === 'handover' && schedule) {
+            updatedAssistants = state.assistants.map((a) => {
+              if (!schedule.assistantIds.includes(a.id)) return a
+              const stillInOther = updatedSchedules.some(
+                (s) => s.id !== id && s.assistantIds.includes(a.id) && s.progress !== 'handover'
+              )
+              return stillInOther ? a : { ...a, status: 'idle' as AssistantStatus }
+            })
+          }
+
+          let updatedRooms = state.rooms
+          if (schedule) {
+            updatedRooms = state.rooms.map((r) =>
+              r.id === schedule.roomId
+                ? { ...r, status: progressToRoomStatus(progress) }
+                : r
+            )
+          }
+
+          return {
+            schedules: updatedSchedules,
+            assistants: updatedAssistants,
+            rooms: updatedRooms,
+          }
+        }),
 
       reportDelay: (id, reason) =>
         set((state) => ({
@@ -101,16 +179,23 @@ export const useStore = create<AppState>()(
         })),
 
       removeAssistant: (scheduleId, assistantId) =>
-        set((state) => ({
-          schedules: state.schedules.map((s) =>
-            s.id === scheduleId
-              ? { ...s, assistantIds: s.assistantIds.filter((id) => id !== assistantId) }
-              : s
-          ),
-          assistants: state.assistants.map((a) =>
-            a.id === assistantId ? { ...a, status: 'idle' as AssistantStatus } : a
-          ),
-        })),
+        set((state) => {
+          const stillInOther = state.schedules.some(
+            (s) => s.id !== scheduleId && s.assistantIds.includes(assistantId) && s.progress !== 'handover'
+          )
+          return {
+            schedules: state.schedules.map((s) =>
+              s.id === scheduleId
+                ? { ...s, assistantIds: s.assistantIds.filter((id) => id !== assistantId) }
+                : s
+            ),
+            assistants: state.assistants.map((a) =>
+              a.id === assistantId
+                ? { ...a, status: stillInOther ? a.status : ('idle' as AssistantStatus) }
+                : a
+            ),
+          }
+        }),
 
       dispatchSupport: (scheduleId, assistantId) => {
         const state = get()
@@ -147,6 +232,21 @@ export const useStore = create<AppState>()(
           ),
         })),
 
+      syncRoomStatus: (roomId) =>
+        set((state) => {
+          const activeSchedule = state.schedules.find(
+            (s) => s.roomId === roomId && s.progress !== 'handover'
+          )
+          const newStatus: RoomStatus = activeSchedule
+            ? progressToRoomStatus(activeSchedule.progress)
+            : 'idle'
+          return {
+            rooms: state.rooms.map((r) =>
+              r.id === roomId ? { ...r, status: newStatus } : r
+            ),
+          }
+        }),
+
       updateConsumable: (id, data) =>
         set((state) => ({
           consumables: state.consumables.map((c) =>
@@ -182,6 +282,18 @@ export const useStore = create<AppState>()(
         set((state) => ({
           notifications: state.notifications.map((n) =>
             n.id === id ? { ...n, read: true } : n
+          ),
+        })),
+
+      markAllNotificationsRead: () =>
+        set((state) => ({
+          notifications: state.notifications.map((n) => ({ ...n, read: true })),
+        })),
+
+      markNotificationsReadByTarget: (targetId) =>
+        set((state) => ({
+          notifications: state.notifications.map((n) =>
+            n.targetId === targetId ? { ...n, read: true } : n
           ),
         })),
 

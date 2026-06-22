@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Check,
   GripVertical,
+  ChevronDown,
 } from 'lucide-react'
 import { format, addDays, startOfWeek, isSameDay, parseISO, differenceInMinutes } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
@@ -220,6 +221,25 @@ export default function Calendar() {
 
   const hasConflict = roomConflicts.length > 0
 
+  const roomOccupancyMap = useMemo(() => {
+    const map = new Map<string, { conflicted: boolean; schedules: Schedule[] }>()
+    if (!form.date || !form.startTime || !form.endTime) return map
+    rooms.forEach((r) => {
+      const conflicted = schedules.filter((s) => {
+        if (s.id === selectedSchedule?.id) return false
+        return (
+          s.roomId === r.id &&
+          s.date === form.date &&
+          isTimeOverlap(form.startTime, form.endTime, s.startTime, s.endTime)
+        )
+      })
+      map.set(r.id, { conflicted: conflicted.length > 0, schedules: conflicted })
+    })
+    return map
+  }, [rooms, form.date, form.startTime, form.endTime, schedules, selectedSchedule])
+
+  const [roomDropdownOpen, setRoomDropdownOpen] = useState(false)
+
   const goToPrev = useCallback(() => {
     setCurrentDate((d) => addDays(d, viewMode === 'week' ? -7 : -1))
   }, [viewMode])
@@ -233,8 +253,35 @@ export default function Calendar() {
   }, [])
 
   const handleFormChange = useCallback((field: keyof FormData, value: string) => {
-    setForm((prev) => ({ ...prev, [field]: value }))
-  }, [])
+    setForm((prev) => {
+      const next = { ...prev, [field]: value }
+      if (field === 'date' || field === 'startTime' || field === 'endTime') {
+        if (next.roomId) {
+          const roomId = next.roomId
+          setTimeout(() => {
+            setForm((p) => {
+              const occupancy = rooms.reduce<{ conflicted: boolean } | null>((acc, r) => {
+                if (r.id === roomId) {
+                  const conflicted = schedules.some((s) => {
+                    if (selectedSchedule?.id === s.id) return false
+                    return s.roomId === roomId && s.date === p.date && isTimeOverlap(p.startTime, p.endTime, s.startTime, s.endTime)
+                  })
+                  return { conflicted }
+                }
+                return acc
+              }, null)
+              if (occupancy?.conflicted) {
+                return { ...p, roomId: '' }
+              }
+              return p
+            })
+          }, 0)
+        }
+        setRoomDropdownOpen(false)
+      }
+      return next
+    })
+  }, [rooms, schedules, selectedSchedule])
 
   const handleProjectChange = useCallback((projectId: string) => {
     const proj = projects.find((p) => p.id === projectId)
@@ -759,26 +806,88 @@ export default function Calendar() {
                         </span>
                       )}
                     </div>
-                    <select
-                      className={cn(
-                        'select-field',
-                        hasConflict && 'border-coral-300 focus:ring-coral-300 bg-coral-50'
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setRoomDropdownOpen(!roomDropdownOpen)}
+                        className={cn(
+                          'select-field w-full text-left flex items-center justify-between',
+                          hasConflict && 'border-coral-300 focus:ring-coral-300 bg-coral-50'
+                        )}
+                      >
+                        <span className={cn(!form.roomId && 'text-gray-400')}>
+                          {form.roomId
+                            ? (() => {
+                                const r = rooms.find((rm) => rm.id === form.roomId)
+                                return r
+                                  ? `${r.name} (${r.type === 'operating' ? '手术室' : r.type === 'laser' ? '光电室' : '注射室'})`
+                                  : '请选择房间'
+                              })()
+                            : '请选择房间'}
+                        </span>
+                        <ChevronDown size={14} className="text-gray-400 shrink-0" />
+                      </button>
+                      {roomDropdownOpen && (
+                        <div className="absolute z-50 mt-1 w-full bg-white border border-warm-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+                          {rooms.map((r) => {
+                            const occupancy = roomOccupancyMap.get(r.id)
+                            const isConflicted = occupancy?.conflicted ?? false
+                            const typeLabel = r.type === 'operating' ? '手术室' : r.type === 'laser' ? '光电室' : '注射室'
+
+                            return (
+                              <div key={r.id}>
+                                <button
+                                  type="button"
+                                  disabled={isConflicted}
+                                  onClick={() => {
+                                    if (!isConflicted) {
+                                      handleFormChange('roomId', r.id)
+                                      setRoomDropdownOpen(false)
+                                    }
+                                  }}
+                                  className={cn(
+                                    'w-full px-3 py-2.5 text-left text-sm transition-colors',
+                                    isConflicted
+                                      ? 'bg-coral-50/50 text-coral-400 cursor-not-allowed'
+                                      : form.roomId === r.id
+                                        ? 'bg-navy-50 text-navy-800 font-medium'
+                                        : 'text-navy-700 hover:bg-warm-50'
+                                  )}
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <span>
+                                      {r.name} ({typeLabel})
+                                    </span>
+                                    {isConflicted ? (
+                                      <span className="flex items-center gap-1 text-[10px] text-coral-500">
+                                        <AlertTriangle size={10} />
+                                        占用中
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-emerald-500">可用</span>
+                                    )}
+                                  </div>
+                                  {isConflicted && occupancy && occupancy.schedules.length > 0 && (
+                                    <div className="mt-1 space-y-0.5">
+                                      {occupancy.schedules.map((s) => {
+                                        const doc = getDoctorById(s.doctorId)
+                                        const proj = getProjectById(s.projectId)
+                                        return (
+                                          <div key={s.id} className="text-[10px] text-coral-400 flex items-center gap-1">
+                                            <Clock size={8} />
+                                            {s.startTime}-{s.endTime} {doc?.name} · {proj?.name}
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  )}
+                                </button>
+                              </div>
+                            )
+                          })}
+                        </div>
                       )}
-                      value={form.roomId}
-                      onChange={(e) => handleFormChange('roomId', e.target.value)}
-                    >
-                      <option value="">请选择房间</option>
-                      {rooms.map((r) => {
-                        const occupiedNow = schedules.some(
-                          (s) => s.roomId === r.id && s.date === form.date && s.progress !== 'handover'
-                        )
-                        return (
-                          <option key={r.id} value={r.id}>
-                            {r.name} ({r.type === 'operating' ? '手术室' : r.type === 'laser' ? '光电室' : '注射室'})
-                          </option>
-                        )
-                      })}
-                    </select>
+                    </div>
                     {hasConflict && roomConflicts.length > 0 && (
                       <div className="mt-2 p-2 rounded-lg bg-coral-50 border border-coral-200/60 text-[11px] text-coral-700">
                         <p className="font-medium mb-1">冲突排班：</p>
