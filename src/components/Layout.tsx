@@ -97,10 +97,16 @@ export default function Layout() {
     if (!schedule) return
     markNotificationRead(n.id)
     setNotifyOpen(false)
+
+    const params = new URLSearchParams()
+    params.set('scheduleId', n.scheduleId)
+    params.set('date', schedule.date)
+
     if (n.type === 'handover' || n.type === 'delay') {
-      navigate('/rooms')
+      params.set('roomId', schedule.roomId)
+      navigate(`/rooms?${params.toString()}`)
     } else {
-      navigate('/calendar')
+      navigate(`/calendar?${params.toString()}`)
     }
   }
 

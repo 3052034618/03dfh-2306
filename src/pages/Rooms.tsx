@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
 import {
@@ -106,7 +107,54 @@ export default function Rooms() {
     stage: ProgressStage
   } | null>(null)
 
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [highlightRoomId, setHighlightRoomId] = useState<string | null>(null)
+  const roomCardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  useEffect(() => {
+    const scheduleId = searchParams.get('scheduleId')
+    const roomId = searchParams.get('roomId')
+    if (!scheduleId && !roomId) return
+
+    let targetRoomId = roomId
+    let targetSchedule: Schedule | null = null
+
+    if (scheduleId) {
+      targetSchedule = schedules.find((s) => s.id === scheduleId) || null
+      if (targetSchedule) {
+        targetRoomId = targetSchedule.roomId
+      }
+    }
+
+    if (targetRoomId) {
+      setHighlightRoomId(targetRoomId)
+      requestAnimationFrame(() => {
+        const el = roomCardRefs.current[targetRoomId!]
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }
+      })
+      const t = setTimeout(() => setHighlightRoomId(null), 3000)
+      return () => clearTimeout(t)
+    }
+
+    if (targetSchedule && targetSchedule.progress === 'handover' && !targetSchedule.handoverCompletedAt) {
+      setHandoverModalSchedule(targetSchedule)
+    }
+  }, [searchParams, schedules])
+
+  function clearUrlParams() {
+    if (searchParams.has('scheduleId') || searchParams.has('roomId')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('scheduleId')
+      next.delete('roomId')
+      next.delete('date')
+      setSearchParams(next)
+    }
+  }
+
   const roomData = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0]
     return rooms.map((room) => {
       const schedule = getScheduleForRoom(room.id)
       const doctor = schedule ? getDoctorById(schedule.doctorId) : null
@@ -114,7 +162,10 @@ export default function Rooms() {
       const assistants = schedule
         ? schedule.assistantIds.map((id) => getAssistantById(id)).filter(Boolean)
         : []
-      return { room, schedule, doctor, project, assistants }
+      const completedToday = schedules.filter(
+        (s) => s.roomId === room.id && s.date === today && s.handoverCompletedAt
+      ).sort((a, b) => (b.handoverCompletedAt ?? '').localeCompare(a.handoverCompletedAt ?? ''))
+      return { room, schedule, doctor, project, assistants, completedToday }
     })
   }, [rooms, schedules, getScheduleForRoom, getDoctorById, getProjectById, getAssistantById])
 
@@ -194,7 +245,15 @@ export default function Rooms() {
     if (!h || !h.customer_departed || !h.consumables_collected || !h.photos_archived) return
     completeHandover(handoverModalSchedule.id)
     setHandoverModalSchedule(null)
+    clearUrlParams()
   }
+
+  function closeHandoverModal() {
+    setHandoverModalSchedule(null)
+    clearUrlParams()
+  }
+
+  const handoverCompleted = !!handoverModalSchedule?.handoverCompletedAt
 
   const handoverAllDone = handoverModalSchedule?.handover
     ? handoverModalSchedule.handover.customer_departed &&
@@ -214,14 +273,24 @@ export default function Rooms() {
         </div>
 
         <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-          {roomData.map(({ room, schedule, doctor, project, assistants }) => {
+          {roomData.map(({ room, schedule, doctor, project, assistants, completedToday }) => {
             const statusCfg = STATUS_CONFIG[room.status]
             const stageIdx = schedule ? getStageIndex(schedule.progress) : -1
             const badgeInfo = ROOM_TYPE_BADGE[room.type]
             const isHandover = schedule?.progress === 'handover' && !schedule.handoverCompletedAt
 
+            const isHighlight = highlightRoomId === room.id
+
             return (
-              <div key={room.id} className={cn('card card-hover border', statusCfg.border)}>
+              <div
+                key={room.id}
+                ref={(el) => { roomCardRefs.current[room.id] = el }}
+                className={cn(
+                  'card card-hover border transition-all duration-300',
+                  statusCfg.border,
+                  isHighlight && 'ring-2 ring-coral-500 ring-offset-2 ring-offset-warm-50 scale-[1.02] shadow-xl z-10'
+                )}
+              >
                 <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
                   <div className="flex items-center gap-2">
                     <span className="text-base font-semibold text-navy-900">{room.name}</span>
@@ -261,6 +330,40 @@ export default function Rooms() {
                     <div className="py-4 text-center text-sm text-gray-400">当前空闲</div>
                   )}
                 </div>
+
+                {completedToday.length > 0 && (
+                  <div className="border-t border-gray-100 px-4 py-3">
+                    <div className="mb-2 flex items-center gap-1.5">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                      <span className="text-xs font-medium text-navy-700">
+                        今日已完成交接 {completedToday.length} 台
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {completedToday.slice(0, 2).map((s) => {
+                        const doc = getDoctorById(s.doctorId)
+                        const proj = getProjectById(s.projectId)
+                        const time = s.handoverCompletedAt
+                          ? new Date(s.handoverCompletedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+                          : ''
+                        return (
+                          <div
+                            key={s.id}
+                            onClick={() => {
+                              setHandoverModalSchedule(s)
+                            }}
+                            className="flex items-center justify-between rounded-md bg-emerald-50 px-2 py-1.5 text-xs text-emerald-800 cursor-pointer hover:bg-emerald-100 transition-colors"
+                          >
+                            <span className="truncate">
+                              {doc?.name ?? ''} · {proj?.name ?? ''}
+                            </span>
+                            <span className="shrink-0 text-emerald-600">{time}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 <div className="px-4 py-3">
                   <div className="flex items-center justify-between">
@@ -506,25 +609,39 @@ export default function Rooms() {
           <div className="mx-4 w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl">
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <FileCheck className="h-5 w-5 text-cyan-600" />
-                <h2 className="text-lg font-semibold text-navy-900">术后交接清单</h2>
+                <FileCheck className={cn('h-5 w-5', handoverCompleted ? 'text-emerald-600' : 'text-cyan-600')} />
+                <h2 className="text-lg font-semibold text-navy-900">
+                  {handoverCompleted ? '交接完成记录' : '术后交接清单'}
+                </h2>
               </div>
               <button
                 type="button"
-                onClick={() => setHandoverModalSchedule(null)}
+                onClick={closeHandoverModal}
                 className="text-gray-400 hover:text-gray-600"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <div className="mb-4 rounded-lg bg-cyan-50 border border-cyan-200 p-3 text-sm">
-              <div className="font-medium text-cyan-800">{handoverModalSchedule.customerName}</div>
-              <div className="text-cyan-600 text-xs mt-0.5">
+            <div className={cn('mb-4 rounded-lg border p-3 text-sm',
+              handoverCompleted
+                ? 'bg-emerald-50 border-emerald-200'
+                : 'bg-cyan-50 border-cyan-200'
+            )}>
+              <div className={cn('font-medium', handoverCompleted ? 'text-emerald-800' : 'text-cyan-800')}>
+                {handoverModalSchedule.customerName}
+              </div>
+              <div className={cn('text-xs mt-0.5', handoverCompleted ? 'text-emerald-600' : 'text-cyan-600')}>
                 {getDoctorById(handoverModalSchedule.doctorId)?.name} ·{' '}
                 {getProjectById(handoverModalSchedule.projectId)?.name} ·{' '}
                 {handoverModalSchedule.startTime}-{handoverModalSchedule.endTime}
               </div>
+              {handoverCompleted && handoverModalSchedule.handoverCompletedAt && (
+                <div className="mt-2 pt-2 border-t border-emerald-200/60 text-xs text-emerald-700 space-y-0.5">
+                  <div>完成时间：{new Date(handoverModalSchedule.handoverCompletedAt).toLocaleString('zh-CN')}</div>
+                  <div>处理人：{handoverModalSchedule.handoverCompletedBy ?? '—'}</div>
+                </div>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -534,9 +651,11 @@ export default function Rooms() {
                   <button
                     key={key}
                     type="button"
+                    disabled={handoverCompleted}
                     onClick={() => handleToggleHandoverItem(key)}
                     className={cn(
                       'w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left',
+                      handoverCompleted && 'cursor-default',
                       checked
                         ? 'bg-emerald-50 border-emerald-200'
                         : 'bg-white border-warm-200 hover:border-emerald-300'
@@ -561,40 +680,52 @@ export default function Rooms() {
                 <label className="block text-sm font-medium text-navy-700 mb-1.5">
                   {HANDOVER_ITEM_LABELS.review_note}
                 </label>
-                <textarea
-                  rows={3}
-                  value={handoverModalSchedule.handover?.review_note ?? ''}
-                  onChange={(e) => handleToggleHandoverItem('review_note', e.target.value)}
-                  placeholder="记录台次复盘重点：顾客特殊反应、操作细节、耗材消耗异常…"
-                  className="w-full resize-none rounded-lg border border-warm-200 px-3 py-2 text-sm text-navy-800 placeholder:text-gray-400 focus:border-emerald-400 focus:outline-none"
-                />
+                {handoverCompleted ? (
+                  <div className="w-full rounded-lg border border-warm-200 bg-warm-50 px-3 py-2 text-sm text-navy-700 min-h-[72px] whitespace-pre-wrap">
+                    {handoverModalSchedule.handover?.review_note || '暂无备注'}
+                  </div>
+                ) : (
+                  <textarea
+                    rows={3}
+                    value={handoverModalSchedule.handover?.review_note ?? ''}
+                    onChange={(e) => handleToggleHandoverItem('review_note', e.target.value)}
+                    placeholder="记录台次复盘重点：顾客特殊反应、操作细节、耗材消耗异常…"
+                    className="w-full resize-none rounded-lg border border-warm-200 px-3 py-2 text-sm text-navy-800 placeholder:text-gray-400 focus:border-emerald-400 focus:outline-none"
+                  />
+                )}
               </div>
             </div>
 
             <div className="mt-5 flex justify-between items-center">
               <span className={cn('text-xs', handoverAllDone ? 'text-emerald-600' : 'text-gray-400')}>
-                {handoverAllDone ? '已完成全部交接项' : '请完成所有必选项后再释放房间'}
+                {handoverCompleted
+                  ? '交接已完成，房间与人员已释放'
+                  : handoverAllDone
+                    ? '已完成全部交接项'
+                    : '请完成所有必选项后再释放房间'}
               </span>
               <div className="flex gap-3">
                 <button
                   type="button"
-                  onClick={() => setHandoverModalSchedule(null)}
+                  onClick={closeHandoverModal}
                   className="btn-secondary"
                 >
-                  稍后处理
+                  {handoverCompleted ? '关闭' : '稍后处理'}
                 </button>
-                <button
-                  type="button"
-                  onClick={handleCompleteHandover}
-                  disabled={!handoverAllDone}
-                  className={cn(
-                    'btn-primary flex items-center gap-1',
-                    !handoverAllDone && 'opacity-50 cursor-not-allowed'
-                  )}
-                >
-                  <CheckCircle2 className="h-4 w-4" />
-                  完成交接
-                </button>
+                {!handoverCompleted && (
+                  <button
+                    type="button"
+                    onClick={handleCompleteHandover}
+                    disabled={!handoverAllDone}
+                    className={cn(
+                      'btn-primary flex items-center gap-1',
+                      !handoverAllDone && 'opacity-50 cursor-not-allowed'
+                    )}
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    完成交接
+                  </button>
+                )}
               </div>
             </div>
           </div>

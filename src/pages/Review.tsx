@@ -491,6 +491,14 @@ export default function Review() {
                           📝 {h.review_note}
                         </p>
                       )}
+                      {done && s.handoverCompletedAt && (
+                        <div className="mt-2 pt-2 border-t border-emerald-200/60 text-[10px] text-emerald-700 flex items-center justify-between">
+                          <span>
+                            完成时间：{new Date(s.handoverCompletedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          <span>处理人：{s.handoverCompletedBy ?? '—'}</span>
+                        </div>
+                      )}
                     </div>
                   )
                 })}

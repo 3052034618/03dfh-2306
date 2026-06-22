@@ -1,4 +1,5 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   ChevronLeft,
   ChevronRight,
@@ -173,12 +174,14 @@ export default function Calendar() {
   const addSchedule = useStore((s) => s.addSchedule)
   const assignAssistant = useStore((s) => s.assignAssistant)
   const removeAssistant = useStore((s) => s.removeAssistant)
+  const updateScheduleRoom = useStore((s) => s.updateScheduleRoom)
   const addNotification = useStore((s) => s.addNotification)
   const getDoctorById = useStore((s) => s.getDoctorById)
   const getProjectById = useStore((s) => s.getProjectById)
   const getRoomById = useStore((s) => s.getRoomById)
   const getAssistantById = useStore((s) => s.getAssistantById)
 
+  const [searchParams, setSearchParams] = useSearchParams()
   const [currentDate, setCurrentDate] = useState(new Date())
   const [viewMode, setViewMode] = useState<ViewMode>('week')
   const [overviewTab, setOverviewTab] = useState<OverviewTab>('doctor')
@@ -188,6 +191,36 @@ export default function Calendar() {
   const [draftAssistantIds, setDraftAssistantIds] = useState<string[]>([])
 
   const [dropTargetScheduleId, setDropTargetScheduleId] = useState<string | null>(null)
+  const [draggingScheduleId, setDraggingScheduleId] = useState<string | null>(null)
+  const [dragDimension, setDragDimension] = useState<'room' | 'assistant' | null>(null)
+  const [dragSourceResourceId, setDragSourceResourceId] = useState<string | null>(null)
+  const [dropTargetResourceId, setDropTargetResourceId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const scheduleId = searchParams.get('scheduleId')
+    const dateStr = searchParams.get('date')
+    if (!scheduleId) return
+
+    const schedule = schedules.find((s) => s.id === scheduleId)
+    if (schedule) {
+      if (dateStr) {
+        setCurrentDate(new Date(`${dateStr}T00:00:00`))
+      }
+      setSelectedSchedule(schedule)
+      setDrawerOpen(true)
+    }
+  }, [searchParams, schedules])
+
+  function closeDrawer() {
+    setDrawerOpen(false)
+    setSelectedSchedule(null)
+    if (searchParams.has('scheduleId')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('scheduleId')
+      next.delete('date')
+      setSearchParams(next)
+    }
+  }
 
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 1 }), [currentDate])
   const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart])
@@ -392,6 +425,7 @@ export default function Calendar() {
           targetId: assistantId,
           timestamp: new Date().toISOString(),
           read: false,
+          scheduleId: newSchedule.id,
         })
       }
     })
@@ -420,6 +454,7 @@ export default function Calendar() {
         targetId: assistantId,
         timestamp: new Date().toISOString(),
         read: false,
+        scheduleId,
       })
 
       if (selectedSchedule?.id === scheduleId) {
@@ -441,6 +476,126 @@ export default function Calendar() {
       }
     },
     [removeAssistant, selectedSchedule]
+  )
+
+  const handleDragStartSchedule = useCallback(
+    (e: React.DragEvent, scheduleId: string, dimension: 'room' | 'assistant', sourceResourceId: string) => {
+      e.dataTransfer.setData('text/plain', scheduleId)
+      e.dataTransfer.effectAllowed = 'move'
+      setDraggingScheduleId(scheduleId)
+      setDragDimension(dimension)
+      setDragSourceResourceId(sourceResourceId)
+    },
+    []
+  )
+
+  const handleDragEndSchedule = useCallback(() => {
+    setDraggingScheduleId(null)
+    setDragDimension(null)
+    setDragSourceResourceId(null)
+    setDropTargetResourceId(null)
+  }, [])
+
+  const handleDragOverResource = useCallback(
+    (e: React.DragEvent, resourceId: string) => {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      if (dropTargetResourceId !== resourceId) {
+        setDropTargetResourceId(resourceId)
+      }
+    },
+    [dropTargetResourceId]
+  )
+
+  const handleDragLeaveResource = useCallback(
+    (e: React.DragEvent, resourceId: string) => {
+      const rect = e.currentTarget.getBoundingClientRect()
+      const x = e.clientX
+      const y = e.clientY
+      if (
+        x <= rect.left ||
+        x >= rect.right ||
+        y <= rect.top ||
+        y >= rect.bottom
+      ) {
+        if (dropTargetResourceId === resourceId) {
+          setDropTargetResourceId(null)
+        }
+      }
+    },
+    [dropTargetResourceId]
+  )
+
+  const handleDropOnResource = useCallback(
+    (e: React.DragEvent, targetResourceId: string) => {
+      e.preventDefault()
+      const scheduleId = e.dataTransfer.getData('text/plain')
+      if (!scheduleId || !dragDimension || !dragSourceResourceId) return
+      if (dragSourceResourceId === targetResourceId) return
+
+      const schedule = schedules.find((s) => s.id === scheduleId)
+      if (!schedule) return
+
+      if (dragDimension === 'room') {
+        updateScheduleRoom(scheduleId, targetResourceId)
+        if (selectedSchedule?.id === scheduleId) {
+          setSelectedSchedule((prev) =>
+            prev ? { ...prev, roomId: targetResourceId } : prev
+          )
+        }
+      } else if (dragDimension === 'assistant') {
+        removeAssistant(scheduleId, dragSourceResourceId)
+        assignAssistant(scheduleId, targetResourceId)
+
+        const assistant = getAssistantById(targetResourceId)
+        const doctor = getDoctorById(schedule.doctorId)
+        const project = getProjectById(schedule.projectId)
+
+        if (assistant) {
+          addNotification({
+            id: `n_${Date.now()}_${targetResourceId}`,
+            type: 'assignment',
+            message: `您已被安排跟台：${doctor?.name ?? ''}医生-${project?.name ?? ''}，${schedule.startTime}-${schedule.endTime}`,
+            targetId: targetResourceId,
+            timestamp: new Date().toISOString(),
+            read: false,
+            scheduleId,
+          })
+        }
+
+        if (selectedSchedule?.id === scheduleId) {
+          setSelectedSchedule((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  assistantIds: [
+                    ...prev.assistantIds.filter((id) => id !== dragSourceResourceId),
+                    targetResourceId,
+                  ],
+                }
+              : prev
+          )
+        }
+      }
+
+      setDraggingScheduleId(null)
+      setDragDimension(null)
+      setDragSourceResourceId(null)
+      setDropTargetResourceId(null)
+    },
+    [
+      schedules,
+      dragDimension,
+      dragSourceResourceId,
+      updateScheduleRoom,
+      removeAssistant,
+      assignAssistant,
+      getAssistantById,
+      getDoctorById,
+      getProjectById,
+      addNotification,
+      selectedSchedule,
+    ]
   )
 
   const handleDropOnSchedule = useCallback(
@@ -699,6 +854,14 @@ export default function Calendar() {
             dropTargetScheduleId={dropTargetScheduleId}
             setDropTargetScheduleId={setDropTargetScheduleId}
             handleDropOnSchedule={handleDropOnSchedule}
+            draggingScheduleId={draggingScheduleId}
+            dragDimension={dragDimension}
+            dropTargetResourceId={dropTargetResourceId}
+            handleDragStartSchedule={handleDragStartSchedule}
+            handleDragEndSchedule={handleDragEndSchedule}
+            handleDragOverResource={handleDragOverResource}
+            handleDragLeaveResource={handleDragLeaveResource}
+            handleDropOnResource={handleDropOnResource}
           />
         ) : (
           <div className="flex-1 overflow-auto bg-warm-50">
@@ -818,15 +981,14 @@ export default function Calendar() {
       {/* Drawer Overlay */}
       {drawerOpen && (
         <div className="fixed inset-0 z-40 flex justify-end">
-          <div className="absolute inset-0 bg-navy-900/30 backdrop-blur-sm" onClick={() => setDrawerOpen(false)} />
+          <div className="absolute inset-0 bg-navy-900/30 backdrop-blur-sm" onClick={closeDrawer} />
           <div className="relative w-[440px] bg-white shadow-2xl flex flex-col animate-slide-in">
-            {/* Drawer Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-warm-200/60 shrink-0">
               <h2 className="font-serif text-lg font-semibold text-navy-800">
                 {selectedSchedule ? '排班详情' : '新增排班'}
               </h2>
               <button
-                onClick={() => setDrawerOpen(false)}
+                onClick={closeDrawer}
                 className="p-1.5 rounded-lg hover:bg-warm-100 transition-colors"
               >
                 <X size={18} className="text-navy-400" />
@@ -1176,6 +1338,14 @@ interface OverviewViewProps {
   dropTargetScheduleId: string | null
   setDropTargetScheduleId: (id: string | null) => void
   handleDropOnSchedule: (e: React.DragEvent, scheduleId: string) => void
+  draggingScheduleId: string | null
+  dragDimension: 'room' | 'assistant' | null
+  dropTargetResourceId: string | null
+  handleDragStartSchedule: (e: React.DragEvent, scheduleId: string, dimension: 'room' | 'assistant', sourceResourceId: string) => void
+  handleDragEndSchedule: () => void
+  handleDragOverResource: (e: React.DragEvent, resourceId: string) => void
+  handleDragLeaveResource: (e: React.DragEvent, resourceId: string) => void
+  handleDropOnResource: (e: React.DragEvent, targetResourceId: string) => void
 }
 
 function OverviewView({
@@ -1200,6 +1370,14 @@ function OverviewView({
   dropTargetScheduleId,
   setDropTargetScheduleId,
   handleDropOnSchedule,
+  draggingScheduleId,
+  dragDimension,
+  dropTargetResourceId,
+  handleDragStartSchedule,
+  handleDragEndSchedule,
+  handleDragOverResource,
+  handleDragLeaveResource,
+  handleDropOnResource,
 }: OverviewViewProps) {
   const getResources = () => {
     switch (overviewTab) {
@@ -1290,20 +1468,41 @@ function OverviewView({
             {/* Resource Name Column */}
             <div className="w-40 shrink-0 sticky left-0 z-20 bg-warm-50">
               <div className="h-10 border-b border-warm-200/60 bg-white" />
-              {resources.map((res) => (
-                <div
-                  key={res.id}
-                  className="h-16 border-b border-warm-100 flex items-center gap-2 px-3 bg-white"
-                >
-                  <div className="w-7 h-7 rounded-full bg-navy-100 flex items-center justify-center shrink-0">
-                    {res.icon}
+              {resources.map((res) => {
+                const isDropTarget = dropTargetResourceId === res.id && (overviewTab === 'room' || overviewTab === 'assistant')
+                return (
+                  <div
+                    key={res.id}
+                    className={cn(
+                      'h-16 border-b border-warm-100 flex items-center gap-2 px-3 bg-white transition-colors duration-150',
+                      isDropTarget && 'bg-navy-100'
+                    )}
+                    onDragOver={(e) => {
+                      if (overviewTab === 'room' || overviewTab === 'assistant') {
+                        handleDragOverResource(e, res.id)
+                      }
+                    }}
+                    onDragLeave={(e) => {
+                      if (overviewTab === 'room' || overviewTab === 'assistant') {
+                        handleDragLeaveResource(e, res.id)
+                      }
+                    }}
+                    onDrop={(e) => {
+                      if (overviewTab === 'room' || overviewTab === 'assistant') {
+                        handleDropOnResource(e, res.id)
+                      }
+                    }}
+                  >
+                    <div className="w-7 h-7 rounded-full bg-navy-100 flex items-center justify-center shrink-0">
+                      {res.icon}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium text-navy-800 truncate">{res.name}</div>
+                      <div className="text-[10px] text-navy-400 truncate">{res.subtitle}</div>
+                    </div>
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-navy-800 truncate">{res.name}</div>
-                    <div className="text-[10px] text-navy-400 truncate">{res.subtitle}</div>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
 
             {/* Timeline Column */}
@@ -1324,16 +1523,40 @@ function OverviewView({
               </div>
 
               {/* Resource Rows with Timeline */}
-              {resources.map((res) => (
-                <div key={res.id} className="relative flex" style={{ height: '64px' }}>
-                  {HOURS.map((hour) => (
-                    <div
-                      key={hour}
-                      className="h-16 border-b border-warm-100 border-r border-warm-100 hover:bg-navy-50/30 transition-colors cursor-pointer"
-                      style={{ width: '96px' }}
-                      onClick={() => openAddDrawer(overviewDateStr, hour)}
-                    />
-                  ))}
+              {resources.map((res) => {
+                const isDropTarget = dropTargetResourceId === res.id && (overviewTab === 'room' || overviewTab === 'assistant')
+                return (
+                  <div
+                    key={res.id}
+                    className={cn(
+                      'relative flex transition-colors duration-150',
+                      isDropTarget && 'bg-navy-100/50'
+                    )}
+                    style={{ height: '64px' }}
+                    onDragOver={(e) => {
+                      if (overviewTab === 'room' || overviewTab === 'assistant') {
+                        handleDragOverResource(e, res.id)
+                      }
+                    }}
+                    onDragLeave={(e) => {
+                      if (overviewTab === 'room' || overviewTab === 'assistant') {
+                        handleDragLeaveResource(e, res.id)
+                      }
+                    }}
+                    onDrop={(e) => {
+                      if (overviewTab === 'room' || overviewTab === 'assistant') {
+                        handleDropOnResource(e, res.id)
+                      }
+                    }}
+                  >
+                    {HOURS.map((hour) => (
+                      <div
+                        key={hour}
+                        className="h-16 border-b border-warm-100 border-r border-warm-100 hover:bg-navy-50/30 transition-colors cursor-pointer"
+                        style={{ width: '96px' }}
+                        onClick={() => openAddDrawer(overviewDateStr, hour)}
+                      />
+                    ))}
 
                   {/* Current Time Indicator */}
                   {isToday && (() => {
@@ -1365,16 +1588,31 @@ function OverviewView({
                     ) * 96
                     const isDropTarget = dropTargetScheduleId === s.id
                     const isConflicted = hasOverlap(res.schedules, s)
+                    const isDragging = draggingScheduleId === s.id
+                    const isDraggable = overviewTab === 'room' || overviewTab === 'assistant'
 
                     const assignedAssistants = s.assistantIds
                       .map((id) => getAssistantById(id))
                       .filter((a): a is Assistant => a !== undefined)
 
+                    const handleClick = (e: React.MouseEvent) => {
+                      if (isDragging) return
+                      openScheduleDetail(s)
+                    }
+
+                    const handleDragStart = (e: React.DragEvent) => {
+                      if (!isDraggable) return
+                      handleDragStartSchedule(e, s.id, overviewTab as 'room' | 'assistant', res.id)
+                    }
+
                     return (
                       <div
                         key={s.id}
                         data-schedule-id={s.id}
-                        onClick={() => openScheduleDetail(s)}
+                        draggable={isDraggable}
+                        onClick={handleClick}
+                        onDragStart={handleDragStart}
+                        onDragEnd={handleDragEndSchedule}
                         onDragOver={(e) => {
                           e.preventDefault()
                           e.dataTransfer.dropEffect = 'copy'
@@ -1403,7 +1641,9 @@ function OverviewView({
                           style.text,
                           isConflicted && 'ring-2 ring-coral-500 border-l-coral-500 z-10',
                           isDropTarget && 'ring-2 ring-emerald-400 shadow-lg z-20 scale-[1.01]',
-                          !isConflicted && !isDropTarget && 'hover:shadow-sm hover:z-10'
+                          !isConflicted && !isDropTarget && 'hover:shadow-sm hover:z-10',
+                          isDragging && 'opacity-50',
+                          isDraggable && 'cursor-grab active:cursor-grabbing'
                         )}
                         style={{ left: `${left + 2}px`, width: `${Math.max(width - 4, 40)}px`, top: '4px', height: '56px' }}
                       >
@@ -1439,8 +1679,9 @@ function OverviewView({
                       </div>
                     )
                   })}
-                </div>
-              ))}
+                  </div>
+                )
+              })}
             </div>
           </div>
         </div>

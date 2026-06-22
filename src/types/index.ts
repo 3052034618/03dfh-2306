@@ -62,6 +62,7 @@ export interface Schedule {
   anomalyNotes: string[]
   handover?: HandoverItems
   handoverCompletedAt?: string
+  handoverCompletedBy?: string
 }
 
 export interface Project {

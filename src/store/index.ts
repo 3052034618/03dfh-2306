@@ -86,7 +86,7 @@ interface AppState {
   updateScheduleProgress: (id: string, progress: ProgressStage) => void
   reportDelay: (id: string, reason: string) => void
   toggleHandoverItem: (id: string, item: HandoverItemKey, value?: boolean | string) => void
-  completeHandover: (id: string) => void
+  completeHandover: (id: string, completedBy?: string) => void
 
   updateAssistantStatus: (id: string, status: AssistantStatus) => void
   assignAssistant: (scheduleId: string, assistantId: string) => void
@@ -96,6 +96,7 @@ interface AppState {
   updateRoomStatus: (id: string, status: RoomStatus) => void
   syncRoomStatus: (roomId: string) => void
   reconcileAllState: () => void
+  updateScheduleRoom: (scheduleId: string, roomId: string) => void
 
   updateConsumable: (id: string, data: Partial<Consumable>) => void
   addConsumableRequest: (consumableId: string, note: string) => void
@@ -219,14 +220,14 @@ export const useStore = create<AppState>()(
           }),
         })),
 
-      completeHandover: (id) =>
+      completeHandover: (id, completedBy = '护士长') =>
         set((state) => {
           const schedule = state.schedules.find((s) => s.id === id)
           if (!schedule || schedule.progress !== 'handover') return state
 
           const completedAt = new Date().toISOString()
           const updatedSchedules = state.schedules.map((s) =>
-            s.id === id ? { ...s, handoverCompletedAt: completedAt } : s
+            s.id === id ? { ...s, handoverCompletedAt: completedAt, handoverCompletedBy: completedBy } : s
           )
 
           const { assistants: updatedAssistants, rooms: updatedRooms } = reconcileState(
@@ -344,6 +345,19 @@ export const useStore = create<AppState>()(
               r.id === roomId ? { ...r, status: newStatus } : r
             ),
           }
+        }),
+
+      updateScheduleRoom: (scheduleId, roomId) =>
+        set((state) => {
+          const updatedSchedules = state.schedules.map((s) =>
+            s.id === scheduleId ? { ...s, roomId } : s
+          )
+          const { assistants, rooms } = reconcileState(
+            updatedSchedules,
+            state.assistants,
+            state.rooms
+          )
+          return { schedules: updatedSchedules, assistants, rooms }
         }),
 
       updateConsumable: (id, data) =>
