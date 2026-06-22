@@ -10,12 +10,16 @@ import {
   CalendarDays,
   LayoutList,
   AlertCircle,
+  Users,
+  AlertTriangle,
+  Check,
+  GripVertical,
 } from 'lucide-react'
 import { format, addDays, startOfWeek, isSameDay, parseISO, differenceInMinutes } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
-import type { Schedule, ProjectCategory, Qualification } from '@/types'
+import type { Schedule, ProjectCategory, Qualification, Assistant } from '@/types'
 import {
   QUALIFICATION_LABELS,
   PROJECT_CATEGORY_LABELS,
@@ -59,6 +63,101 @@ const EMPTY_FORM: FormData = {
   endTime: '10:00',
 }
 
+function isTimeOverlap(
+  start1: string,
+  end1: string,
+  start2: string,
+  end2: string
+): boolean {
+  return start1 < end2 && start2 < end1
+}
+
+function DraggableAssistantChip({
+  assistant,
+}: {
+  assistant: Assistant
+}) {
+  const handleDragStart = useCallback(
+    (e: React.DragEvent) => {
+      e.dataTransfer.setData('assistantId', assistant.id)
+      e.dataTransfer.effectAllowed = 'copy'
+    },
+    [assistant.id]
+  )
+
+  return (
+    <div
+      draggable
+      onDragStart={handleDragStart}
+      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-navy-100 text-navy-700 text-xs font-medium shrink-0 cursor-grab active:cursor-grabbing hover:bg-navy-200 transition-colors"
+    >
+      <GripVertical size={10} className="text-navy-400" />
+      <User size={12} />
+      <span>{assistant.name}</span>
+    </div>
+  )
+}
+
+function DraggableAssistantItem({
+  assistant,
+  isAssigned,
+  onToggle,
+}: {
+  assistant: Assistant
+  isAssigned: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-3 p-3 rounded-lg border transition-all duration-200 cursor-pointer',
+        isAssigned
+          ? 'border-emerald-300 bg-emerald-50'
+          : 'border-warm-200 bg-white hover:border-navy-200',
+        assistant.status === 'busy' && !isAssigned && 'opacity-50'
+      )}
+      onClick={onToggle}
+    >
+      <div className="w-8 h-8 rounded-full bg-navy-100 flex items-center justify-center shrink-0">
+        <User size={14} className="text-navy-500" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-navy-800">{assistant.name}</span>
+          <span
+            className={cn(
+              'text-[10px] px-1.5 py-0.5 rounded-full font-medium',
+              assistant.status === 'idle'
+                ? 'bg-emerald-100 text-emerald-700'
+                : assistant.status === 'busy'
+                  ? 'bg-amber-100 text-amber-700'
+                  : 'bg-warm-200 text-navy-500'
+            )}
+          >
+            {ASSISTANT_STATUS_LABELS[assistant.status]}
+          </span>
+        </div>
+        <div className="flex items-center gap-1 mt-1 flex-wrap">
+          {assistant.qualifications.map((q) => (
+            <span key={q} className={cn('badge text-[10px] px-1.5 py-0', `badge-${q}`)}>
+              {QUALIFICATION_LABELS[q]}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="shrink-0">
+        {isAssigned ? (
+          <div className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center">
+            <Check size={12} className="text-white" />
+          </div>
+        ) : (
+          <div className="w-5 h-5 rounded-full border-2 border-warm-300" />
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function Calendar() {
   const schedules = useStore((s) => s.schedules)
   const doctors = useStore((s) => s.doctors)
@@ -79,10 +178,12 @@ export default function Calendar() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedSchedule, setSelectedSchedule] = useState<Schedule | null>(null)
   const [form, setForm] = useState<FormData>(EMPTY_FORM)
+  const [draftAssistantIds, setDraftAssistantIds] = useState<string[]>([])
+
+  const [dropTargetScheduleId, setDropTargetScheduleId] = useState<string | null>(null)
 
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 1 }), [currentDate])
   const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart])
-
   const displayDays = useMemo(() => (viewMode === 'week' ? weekDays : [currentDate]), [viewMode, weekDays, currentDate])
 
   const schedulesByDate = useMemo(() => {
@@ -95,6 +196,30 @@ export default function Calendar() {
     return map
   }, [schedules])
 
+  const selectedProject = useMemo(() => projects.find((p) => p.id === form.projectId), [projects, form.projectId])
+
+  const recommendedAssistants = useMemo(() => {
+    if (!selectedProject) return []
+    return assistants.filter((a) => {
+      if (a.status === 'leave') return false
+      return selectedProject.requiredQualifications.some((q) => a.qualifications.includes(q))
+    })
+  }, [selectedProject, assistants])
+
+  const roomConflicts = useMemo(() => {
+    if (!form.roomId || !form.date || !form.startTime || !form.endTime) return []
+    return schedules.filter((s) => {
+      if (s.id === selectedSchedule?.id) return false
+      return (
+        s.roomId === form.roomId &&
+        s.date === form.date &&
+        isTimeOverlap(form.startTime, form.endTime, s.startTime, s.endTime)
+      )
+    })
+  }, [form, schedules, selectedSchedule])
+
+  const hasConflict = roomConflicts.length > 0
+
   const goToPrev = useCallback(() => {
     setCurrentDate((d) => addDays(d, viewMode === 'week' ? -7 : -1))
   }, [viewMode])
@@ -106,16 +231,6 @@ export default function Calendar() {
   const goToToday = useCallback(() => {
     setCurrentDate(new Date())
   }, [])
-
-  const selectedProject = useMemo(() => projects.find((p) => p.id === form.projectId), [projects, form.projectId])
-
-  const recommendedAssistants = useMemo(() => {
-    if (!selectedProject) return []
-    return assistants.filter((a) => {
-      if (a.status === 'leave') return false
-      return selectedProject.requiredQualifications.some((q) => a.qualifications.includes(q))
-    })
-  }, [selectedProject, assistants])
 
   const handleFormChange = useCallback((field: keyof FormData, value: string) => {
     setForm((prev) => ({ ...prev, [field]: value }))
@@ -134,16 +249,26 @@ export default function Calendar() {
           })()
         : prev.endTime,
     }))
+    setDraftAssistantIds([])
   }, [projects])
+
+  const toggleDraftAssistant = useCallback((assistantId: string) => {
+    setDraftAssistantIds((prev) =>
+      prev.includes(assistantId)
+        ? prev.filter((id) => id !== assistantId)
+        : [...prev, assistantId]
+    )
+  }, [])
 
   const handleSubmit = useCallback(() => {
     if (!form.doctorId || !form.projectId || !form.roomId || !form.customerName || !form.date || !form.startTime || !form.endTime) return
+    if (hasConflict) return
 
     const newSchedule: Schedule = {
       id: `s_${Date.now()}`,
       doctorId: form.doctorId,
       roomId: form.roomId,
-      assistantIds: [],
+      assistantIds: draftAssistantIds,
       customerName: form.customerName,
       projectId: form.projectId,
       date: form.date,
@@ -156,9 +281,28 @@ export default function Calendar() {
     }
 
     addSchedule(newSchedule)
+
+    draftAssistantIds.forEach((assistantId) => {
+      const assistant = getAssistantById(assistantId)
+      const doctor = getDoctorById(form.doctorId)
+      const project = getProjectById(form.projectId)
+
+      if (assistant) {
+        addNotification({
+          id: `n_${Date.now()}_${assistantId}`,
+          type: 'assignment',
+          message: `您已被安排跟台：${doctor?.name ?? ''}医生-${project?.name ?? ''}，${form.startTime}-${form.endTime}`,
+          targetId: assistantId,
+          timestamp: new Date().toISOString(),
+          read: false,
+        })
+      }
+    })
+
     setSelectedSchedule(newSchedule)
     setForm(EMPTY_FORM)
-  }, [form, addSchedule])
+    setDraftAssistantIds([])
+  }, [form, draftAssistantIds, addSchedule, addNotification, getAssistantById, getDoctorById, getProjectById, hasConflict])
 
   const handleAssignAssistant = useCallback(
     (scheduleId: string, assistantId: string) => {
@@ -173,7 +317,7 @@ export default function Calendar() {
       const project = getProjectById(schedule.projectId)
 
       addNotification({
-        id: `n_${Date.now()}`,
+        id: `n_${Date.now()}_${assistantId}`,
         type: 'assignment',
         message: `您已被安排跟台：${doctor?.name ?? ''}医生-${project?.name ?? ''}，${schedule.startTime}-${schedule.endTime}`,
         targetId: assistantId,
@@ -202,6 +346,24 @@ export default function Calendar() {
     [removeAssistant, selectedSchedule]
   )
 
+  const handleDropOnSchedule = useCallback(
+    (e: React.DragEvent, scheduleId: string) => {
+      e.preventDefault()
+      setDropTargetScheduleId(null)
+
+      const assistantId = e.dataTransfer.getData('assistantId')
+      if (!assistantId) return
+
+      const schedule = schedules.find((s) => s.id === scheduleId)
+      const assistant = getAssistantById(assistantId)
+
+      if (schedule && assistant && !schedule.assistantIds.includes(assistantId)) {
+        handleAssignAssistant(scheduleId, assistantId)
+      }
+    },
+    [schedules, getAssistantById, handleAssignAssistant]
+  )
+
   const openAddDrawer = useCallback((date?: string, hour?: number) => {
     setForm({
       ...EMPTY_FORM,
@@ -209,6 +371,7 @@ export default function Calendar() {
       startTime: hour ? `${String(hour).padStart(2, '0')}:00` : '09:00',
       endTime: hour ? `${String(hour + 1).padStart(2, '0')}:00` : '10:00',
     })
+    setDraftAssistantIds([])
     setSelectedSchedule(null)
     setDrawerOpen(true)
   }, [])
@@ -217,6 +380,7 @@ export default function Calendar() {
     (schedule: Schedule) => {
       setSelectedSchedule(schedule)
       setForm(EMPTY_FORM)
+      setDraftAssistantIds([])
       setDrawerOpen(true)
     },
     []
@@ -246,17 +410,46 @@ export default function Calendar() {
       const top = getScheduleTop(schedule.startTime)
       const height = getScheduleHeight(schedule.startTime, schedule.endTime)
       const isSelected = selectedSchedule?.id === schedule.id
+      const isDropTarget = dropTargetScheduleId === schedule.id
+
+      const assignedAssistants = schedule.assistantIds
+        .map((id) => getAssistantById(id))
+        .filter((a): a is Assistant => a !== undefined)
 
       return (
         <div
           key={schedule.id}
+          data-schedule-id={schedule.id}
           onClick={() => openScheduleDetail(schedule)}
+          onDragOver={(e) => {
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'copy'
+            if (dropTargetScheduleId !== schedule.id) {
+              setDropTargetScheduleId(schedule.id)
+            }
+          }}
+          onDragLeave={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect()
+            const x = e.clientX
+            const y = e.clientY
+            if (
+              x <= rect.left ||
+              x >= rect.right ||
+              y <= rect.top ||
+              y >= rect.bottom
+            ) {
+              setDropTargetScheduleId(null)
+            }
+          }}
+          onDrop={(e) => handleDropOnSchedule(e, schedule.id)}
           className={cn(
             'absolute left-1 right-1 rounded-lg border-l-4 px-2 py-1 cursor-pointer transition-all duration-150 overflow-hidden',
             style.bg,
             style.border,
             style.text,
-            isSelected ? 'ring-2 ring-coral-400 shadow-md z-10' : 'hover:shadow-sm hover:z-10'
+            isSelected && 'ring-2 ring-coral-400 shadow-md z-10',
+            isDropTarget && 'ring-2 ring-emerald-400 shadow-lg z-20 scale-[1.02]',
+            !isSelected && !isDropTarget && 'hover:shadow-sm hover:z-10'
           )}
           style={{ top: `${top}px`, height: `${height}px` }}
         >
@@ -273,6 +466,22 @@ export default function Calendar() {
               {schedule.startTime}-{schedule.endTime} · {room?.name}
             </div>
           )}
+          {(viewMode === 'day' || height > 80) && assignedAssistants.length > 0 && (
+            <div className="flex items-center gap-1 mt-1 flex-wrap">
+              {assignedAssistants.slice(0, 3).map((a) => (
+                <span
+                  key={a.id}
+                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] rounded-full bg-white/80 text-navy-600"
+                >
+                  <User size={8} />
+                  {a.name}
+                </span>
+              ))}
+              {assignedAssistants.length > 3 && (
+                <span className="text-[10px] text-navy-500">+{assignedAssistants.length - 3}</span>
+              )}
+            </div>
+          )}
           {schedule.delayReason && (
             <div className="flex items-center gap-0.5 text-[10px] text-coral-500 mt-0.5">
               <AlertCircle size={10} />
@@ -282,159 +491,194 @@ export default function Calendar() {
         </div>
       )
     },
-    [getScheduleStyle, getDoctorById, getProjectById, getRoomById, getScheduleTop, getScheduleHeight, selectedSchedule, openScheduleDetail, viewMode]
+    [getScheduleStyle, getDoctorById, getProjectById, getRoomById, getAssistantById, getScheduleTop, getScheduleHeight, selectedSchedule, openScheduleDetail, viewMode, dropTargetScheduleId, handleDropOnSchedule]
+  )
+
+  const allAssistantsForDrag = useMemo(
+    () => assistants.filter((a) => a.status === 'idle' || a.status === 'break'),
+    [assistants]
   )
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-      {/* Header */}
-      <div className="px-6 py-4 bg-white border-b border-warm-200/60 shrink-0">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h1 className="section-title">排班日历</h1>
-            <div className="flex items-center bg-warm-100 rounded-lg p-0.5">
-              <button
-                onClick={() => setViewMode('week')}
-                className={cn(
-                  'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200',
-                  viewMode === 'week' ? 'bg-white text-navy-800 shadow-sm' : 'text-navy-400 hover:text-navy-600'
-                )}
-              >
-                <CalendarDays size={14} />
-                周视图
-              </button>
-              <button
-                onClick={() => setViewMode('day')}
-                className={cn(
-                  'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200',
-                  viewMode === 'day' ? 'bg-white text-navy-800 shadow-sm' : 'text-navy-400 hover:text-navy-600'
-                )}
-              >
-                <LayoutList size={14} />
-                日视图
+    <div className="flex h-full overflow-hidden">
+      <div className="flex flex-col flex-1 overflow-hidden">
+        {/* Header */}
+        <div className="px-6 py-4 bg-white border-b border-warm-200/60 shrink-0">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <h1 className="section-title">排班日历</h1>
+              <div className="flex items-center bg-warm-100 rounded-lg p-0.5">
+                <button
+                  onClick={() => setViewMode('week')}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200',
+                    viewMode === 'week' ? 'bg-white text-navy-800 shadow-sm' : 'text-navy-400 hover:text-navy-600'
+                  )}
+                >
+                  <CalendarDays size={14} />
+                  周视图
+                </button>
+                <button
+                  onClick={() => setViewMode('day')}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all duration-200',
+                    viewMode === 'day' ? 'bg-white text-navy-800 shadow-sm' : 'text-navy-400 hover:text-navy-600'
+                  )}
+                >
+                  <LayoutList size={14} />
+                  日视图
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1">
+                <button onClick={goToPrev} className="p-1.5 rounded-lg hover:bg-warm-100 transition-colors">
+                  <ChevronLeft size={18} className="text-navy-600" />
+                </button>
+                <button
+                  onClick={goToToday}
+                  className="px-3 py-1.5 rounded-lg text-sm font-medium text-navy-600 hover:bg-warm-100 transition-colors"
+                >
+                  今天
+                </button>
+                <button onClick={goToNext} className="p-1.5 rounded-lg hover:bg-warm-100 transition-colors">
+                  <ChevronRight size={18} className="text-navy-600" />
+                </button>
+              </div>
+              <span className="text-sm font-semibold text-navy-700 min-w-[120px] text-center">
+                {viewMode === 'week'
+                  ? `${format(weekStart, 'M月d日', { locale: zhCN })} - ${format(addDays(weekStart, 6), 'M月d日', { locale: zhCN })}`
+                  : format(currentDate, 'yyyy年M月d日 EEEE', { locale: zhCN })}
+              </span>
+
+              <div className="flex items-center gap-2 ml-2">
+                {(['eye_nose', 'laser', 'injection'] as ProjectCategory[]).map((cat) => (
+                  <span key={cat} className={CATEGORY_BADGE[cat]}>
+                    {PROJECT_CATEGORY_LABELS[cat]}
+                  </span>
+                ))}
+              </div>
+
+              <button onClick={() => openAddDrawer()} className="btn-primary flex items-center gap-1.5 ml-2">
+                <Plus size={15} />
+                新增排班
               </button>
             </div>
           </div>
+        </div>
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1">
-              <button onClick={goToPrev} className="p-1.5 rounded-lg hover:bg-warm-100 transition-colors">
-                <ChevronLeft size={18} className="text-navy-600" />
-              </button>
-              <button
-                onClick={goToToday}
-                className="px-3 py-1.5 rounded-lg text-sm font-medium text-navy-600 hover:bg-warm-100 transition-colors"
-              >
-                今天
-              </button>
-              <button onClick={goToNext} className="p-1.5 rounded-lg hover:bg-warm-100 transition-colors">
-                <ChevronRight size={18} className="text-navy-600" />
-              </button>
-            </div>
-            <span className="text-sm font-semibold text-navy-700 min-w-[120px] text-center">
-              {viewMode === 'week'
-                ? `${format(weekStart, 'M月d日', { locale: zhCN })} - ${format(addDays(weekStart, 6), 'M月d日', { locale: zhCN })}`
-                : format(currentDate, 'yyyy年M月d日 EEEE', { locale: zhCN })}
-            </span>
-
-            <div className="flex items-center gap-2 ml-2">
-              {(['eye_nose', 'laser', 'injection'] as ProjectCategory[]).map((cat) => (
-                <span key={cat} className={CATEGORY_BADGE[cat]}>
-                  {PROJECT_CATEGORY_LABELS[cat]}
-                </span>
+        {/* Calendar Grid */}
+        <div className="flex-1 overflow-auto bg-warm-50">
+          <div className="flex min-w-max">
+            {/* Time Column */}
+            <div className="w-16 shrink-0 sticky left-0 z-20 bg-warm-50">
+              <div className="h-12 border-b border-warm-200/60" />
+              {HOURS.map((hour) => (
+                <div key={hour} className="h-16 border-b border-warm-100 flex items-start justify-end pr-2 pt-0">
+                  <span className="text-[11px] text-navy-300 font-medium -mt-2">
+                    {String(hour).padStart(2, '0')}:00
+                  </span>
+                </div>
               ))}
             </div>
 
-            <button onClick={() => openAddDrawer()} className="btn-primary flex items-center gap-1.5 ml-2">
-              <Plus size={15} />
-              新增排班
-            </button>
+            {/* Day Columns */}
+            {displayDays.map((day) => {
+              const dateStr = format(day, 'yyyy-MM-dd')
+              const daySchedules = schedulesByDate.get(dateStr) ?? []
+              const isToday = isSameDay(day, new Date())
+
+              return (
+                <div
+                  key={dateStr}
+                  className={cn(
+                    'flex-1 min-w-[140px] border-r border-warm-200/60 last:border-r-0',
+                    viewMode === 'day' && 'min-w-[300px]'
+                  )}
+                >
+                  {/* Day Header */}
+                  <div
+                    className={cn(
+                      'h-12 flex flex-col items-center justify-center border-b border-warm-200/60 sticky top-0 z-10',
+                      isToday ? 'bg-coral-50' : 'bg-white'
+                    )}
+                  >
+                    <span className={cn('text-[10px] font-medium', isToday ? 'text-coral-500' : 'text-navy-300')}>
+                      {format(day, 'EEE', { locale: zhCN })}
+                    </span>
+                    <span
+                      className={cn(
+                        'text-sm font-bold',
+                        isToday ? 'text-coral-600' : 'text-navy-700'
+                      )}
+                    >
+                      {format(day, 'd')}
+                    </span>
+                  </div>
+
+                  {/* Time Slots */}
+                  <div className="relative">
+                    {HOURS.map((hour) => (
+                      <div
+                        key={hour}
+                        className="h-16 border-b border-warm-100 hover:bg-navy-50/30 transition-colors cursor-pointer"
+                        onClick={() => openAddDrawer(dateStr, hour)}
+                      />
+                    ))}
+
+                    {/* Current Time Indicator */}
+                    {isToday && (() => {
+                      const now = new Date()
+                      const h = now.getHours()
+                      const m = now.getMinutes()
+                      if (h < 8 || h >= 18) return null
+                      const top = (h - 8) * 64 + (m / 60) * 64
+                      return (
+                        <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top: `${top}px` }}>
+                          <div className="flex items-center">
+                            <div className="w-2 h-2 rounded-full bg-coral-400 -ml-1" />
+                            <div className="flex-1 h-px bg-coral-400" />
+                          </div>
+                        </div>
+                      )
+                    })()}
+
+                    {/* Schedule Blocks */}
+                    {daySchedules.map(renderScheduleBlock)}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </div>
       </div>
 
-      {/* Calendar Grid */}
-      <div className="flex-1 overflow-auto bg-warm-50">
-        <div className="flex min-w-max">
-          {/* Time Column */}
-          <div className="w-16 shrink-0 sticky left-0 z-20 bg-warm-50">
-            <div className="h-12 border-b border-warm-200/60" />
-            {HOURS.map((hour) => (
-              <div key={hour} className="h-16 border-b border-warm-100 flex items-start justify-end pr-2 pt-0">
-                <span className="text-[11px] text-navy-300 font-medium -mt-2">
-                  {String(hour).padStart(2, '0')}:00
-                </span>
-              </div>
-            ))}
+      {/* Right Sidebar - Draggable Assistants */}
+      <div className="w-56 bg-white border-l border-warm-200/60 flex flex-col shrink-0">
+        <div className="px-4 py-3 border-b border-warm-200/60">
+          <div className="flex items-center gap-2">
+            <Users size={16} className="text-navy-600" />
+            <span className="text-sm font-semibold text-navy-800">可调配人员</span>
           </div>
-
-          {/* Day Columns */}
-          {displayDays.map((day) => {
-            const dateStr = format(day, 'yyyy-MM-dd')
-            const daySchedules = schedulesByDate.get(dateStr) ?? []
-            const isToday = isSameDay(day, new Date())
-
-            return (
-              <div
-                key={dateStr}
-                className={cn(
-                  'flex-1 min-w-[140px] border-r border-warm-200/60 last:border-r-0',
-                  viewMode === 'day' && 'min-w-[300px]'
-                )}
-              >
-                {/* Day Header */}
-                <div
-                  className={cn(
-                    'h-12 flex flex-col items-center justify-center border-b border-warm-200/60 sticky top-0 z-10',
-                    isToday ? 'bg-coral-50' : 'bg-white'
-                  )}
-                >
-                  <span className={cn('text-[10px] font-medium', isToday ? 'text-coral-500' : 'text-navy-300')}>
-                    {format(day, 'EEE', { locale: zhCN })}
-                  </span>
-                  <span
-                    className={cn(
-                      'text-sm font-bold',
-                      isToday ? 'text-coral-600' : 'text-navy-700'
-                    )}
-                  >
-                    {format(day, 'd')}
-                  </span>
-                </div>
-
-                {/* Time Slots */}
-                <div className="relative">
-                  {HOURS.map((hour) => (
-                    <div
-                      key={hour}
-                      className="h-16 border-b border-warm-100 hover:bg-navy-50/30 transition-colors cursor-pointer"
-                      onClick={() => openAddDrawer(dateStr, hour)}
-                    />
-                  ))}
-
-                  {/* Current Time Indicator */}
-                  {isToday && (() => {
-                    const now = new Date()
-                    const h = now.getHours()
-                    const m = now.getMinutes()
-                    if (h < 8 || h >= 18) return null
-                    const top = (h - 8) * 64 + (m / 60) * 64
-                    return (
-                      <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{ top: `${top}px` }}>
-                        <div className="flex items-center">
-                          <div className="w-2 h-2 rounded-full bg-coral-400 -ml-1" />
-                          <div className="flex-1 h-px bg-coral-400" />
-                        </div>
-                      </div>
-                    )
-                  })()}
-
-                  {/* Schedule Blocks */}
-                  {daySchedules.map(renderScheduleBlock)}
-                </div>
-              </div>
-            )
-          })}
+          <p className="text-[11px] text-navy-400 mt-1">拖拽到排班块上快速分配</p>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {allAssistantsForDrag.map((assistant) => (
+            <div key={assistant.id} className="mb-2">
+              <DraggableAssistantChip assistant={assistant} />
+            </div>
+          ))}
+          {allAssistantsForDrag.length === 0 && (
+            <div className="text-center text-xs text-navy-300 py-4">
+              暂无空闲人员
+            </div>
+          )}
+        </div>
+        <div className="p-3 border-t border-warm-200/60">
+          <p className="text-[10px] text-navy-400 text-center">
+            共 {allAssistantsForDrag.length} 人可调配
+          </p>
         </div>
       </div>
 
@@ -506,19 +750,52 @@ export default function Calendar() {
 
                   {/* Room */}
                   <div>
-                    <label className="block text-sm font-medium text-navy-700 mb-1.5">房间</label>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-sm font-medium text-navy-700">房间</label>
+                      {hasConflict && (
+                        <span className="text-[11px] text-coral-500 flex items-center gap-1">
+                          <AlertTriangle size={12} />
+                          时间冲突
+                        </span>
+                      )}
+                    </div>
                     <select
-                      className="select-field"
+                      className={cn(
+                        'select-field',
+                        hasConflict && 'border-coral-300 focus:ring-coral-300 bg-coral-50'
+                      )}
                       value={form.roomId}
                       onChange={(e) => handleFormChange('roomId', e.target.value)}
                     >
                       <option value="">请选择房间</option>
-                      {rooms.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name} ({r.status === 'idle' ? '空闲' : '占用'})
-                        </option>
-                      ))}
+                      {rooms.map((r) => {
+                        const occupiedNow = schedules.some(
+                          (s) => s.roomId === r.id && s.date === form.date && s.progress !== 'handover'
+                        )
+                        return (
+                          <option key={r.id} value={r.id}>
+                            {r.name} ({r.type === 'operating' ? '手术室' : r.type === 'laser' ? '光电室' : '注射室'})
+                          </option>
+                        )
+                      })}
                     </select>
+                    {hasConflict && roomConflicts.length > 0 && (
+                      <div className="mt-2 p-2 rounded-lg bg-coral-50 border border-coral-200/60 text-[11px] text-coral-700">
+                        <p className="font-medium mb-1">冲突排班：</p>
+                        {roomConflicts.map((s) => {
+                          const doctor = getDoctorById(s.doctorId)
+                          const project = getProjectById(s.projectId)
+                          return (
+                            <div key={s.id} className="flex items-center gap-1.5">
+                              <Clock size={10} />
+                              <span>
+                                {s.startTime}-{s.endTime} {doctor?.name} {project?.name}
+                              </span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   {/* Customer Name */}
@@ -566,6 +843,44 @@ export default function Calendar() {
                     </div>
                   </div>
 
+                  {/* Draft Assistants List */}
+                  {draftAssistantIds.length > 0 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-navy-700">
+                          已选配台 ({draftAssistantIds.length})
+                        </span>
+                        <button
+                          onClick={() => setDraftAssistantIds([])}
+                          className="text-xs text-coral-500 hover:text-coral-600"
+                        >
+                          清空
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {draftAssistantIds.map((id) => {
+                          const a = getAssistantById(id)
+                          if (!a) return null
+                          return (
+                            <span
+                              key={id}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium"
+                            >
+                              <Check size={10} />
+                              {a.name}
+                              <button
+                                onClick={() => toggleDraftAssistant(id)}
+                                className="ml-0.5 hover:text-emerald-900"
+                              >
+                                <X size={10} />
+                              </button>
+                            </span>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Recommended Assistants */}
                   {selectedProject && (
                     <div className="pt-2">
@@ -582,7 +897,7 @@ export default function Calendar() {
                           暂无符合条件的配台人员
                         </div>
                       ) : (
-                        <div className="space-y-2">
+                        <div className="space-y-2 max-h-64 overflow-y-auto">
                           {recommendedAssistants.map((a) => {
                             const matchCount = a.qualifications.filter((q) =>
                               selectedProject.requiredQualifications.includes(q)
@@ -590,99 +905,23 @@ export default function Calendar() {
                             const isFullMatch = selectedProject.requiredQualifications.every((q) =>
                               a.qualifications.includes(q)
                             )
+                            const isSelected = draftAssistantIds.includes(a.id)
 
                             return (
-                              <div
+                              <DraggableAssistantItem
                                 key={a.id}
-                                className={cn(
-                                  'flex items-center gap-3 p-3 rounded-lg border transition-all duration-200',
-                                  isFullMatch
-                                    ? 'border-emerald-200 bg-emerald-50/50'
-                                    : 'border-warm-200 bg-white',
-                                  a.status === 'busy' && 'opacity-60'
-                                )}
-                              >
-                                <div className="w-8 h-8 rounded-full bg-navy-100 flex items-center justify-center shrink-0">
-                                  <User size={14} className="text-navy-500" />
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-medium text-navy-800">{a.name}</span>
-                                    <span
-                                      className={cn(
-                                        'text-[10px] px-1.5 py-0.5 rounded-full font-medium',
-                                        a.status === 'idle'
-                                          ? 'bg-emerald-100 text-emerald-700'
-                                          : a.status === 'busy'
-                                            ? 'bg-amber-100 text-amber-700'
-                                            : 'bg-warm-200 text-navy-500'
-                                      )}
-                                    >
-                                      {ASSISTANT_STATUS_LABELS[a.status]}
-                                    </span>
-                                    {isFullMatch && (
-                                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-200 text-emerald-800 font-medium">
-                                        完全匹配
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="flex items-center gap-1 mt-1 flex-wrap">
-                                    {a.qualifications.map((q) => {
-                                      const isMatch = selectedProject.requiredQualifications.includes(q)
-                                      return (
-                                        <span
-                                          key={q}
-                                          className={cn(
-                                            'badge text-[10px] px-1.5 py-0',
-                                            isMatch ? `badge-${q}` : 'bg-warm-100 text-navy-400'
-                                          )}
-                                        >
-                                          {QUALIFICATION_LABELS[q]}
-                                        </span>
-                                      )
-                                    })}
-                                    <span className="text-[10px] text-navy-300 ml-1">
-                                      匹配 {matchCount}/{selectedProject.requiredQualifications.length}
-                                    </span>
-                                  </div>
-                                </div>
-                                <button
-                                  className={cn(
-                                    'px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 shrink-0',
-                                    a.status === 'busy'
-                                      ? 'bg-warm-100 text-navy-300 cursor-not-allowed'
-                                      : 'bg-emerald-500 text-white hover:bg-emerald-600 active:scale-95'
-                                  )}
-                                  disabled={a.status === 'busy'}
-                                  onClick={() => {
-                                    if (form.doctorId && form.projectId && form.roomId && form.customerName && form.date) {
-                                      const tempSchedule: Schedule = {
-                                        id: `s_temp_${Date.now()}`,
-                                        doctorId: form.doctorId,
-                                        roomId: form.roomId,
-                                        assistantIds: [],
-                                        customerName: form.customerName,
-                                        projectId: form.projectId,
-                                        date: form.date,
-                                        startTime: form.startTime,
-                                        endTime: form.endTime,
-                                        progress: 'preparing',
-                                        isOvertime: false,
-                                        isSwapped: false,
-                                        anomalyNotes: [],
-                                      }
-                                      addSchedule(tempSchedule)
-                                      handleAssignAssistant(tempSchedule.id, a.id)
-                                    }
-                                  }}
-                                >
-                                  指派
-                                </button>
-                              </div>
+                                assistant={a}
+                                isAssigned={isSelected}
+                                onToggle={() => toggleDraftAssistant(a.id)}
+                              />
                             )
                           })}
                         </div>
                       )}
+
+                      <p className="text-[10px] text-navy-400 mt-2">
+                        点击人员添加到待分配列表，确认提交后统一保存
+                      </p>
                     </div>
                   )}
                 </div>
@@ -694,15 +933,22 @@ export default function Calendar() {
               <div className="px-6 py-4 border-t border-warm-200/60 shrink-0">
                 <button
                   onClick={handleSubmit}
-                  disabled={!form.doctorId || !form.projectId || !form.roomId || !form.customerName || !form.date}
+                  disabled={!form.doctorId || !form.projectId || !form.roomId || !form.customerName || !form.date || hasConflict}
                   className={cn(
-                    'w-full py-2.5 rounded-lg text-sm font-semibold transition-all duration-200',
-                    form.doctorId && form.projectId && form.roomId && form.customerName && form.date
+                    'w-full py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 flex items-center justify-center gap-2',
+                    form.doctorId && form.projectId && form.roomId && form.customerName && form.date && !hasConflict
                       ? 'bg-navy-800 text-white hover:bg-navy-700 active:scale-[0.98]'
                       : 'bg-warm-200 text-navy-300 cursor-not-allowed'
                   )}
                 >
-                  确认添加排班
+                  {hasConflict ? (
+                    <>
+                      <AlertCircle size={16} />
+                      存在时间冲突，请调整
+                    </>
+                  ) : (
+                    `确认添加排班${draftAssistantIds.length > 0 ? ` (${draftAssistantIds.length}人)` : ''}`
+                  )}
                 </button>
               </div>
             )}
@@ -727,8 +973,8 @@ function ScheduleDetailPanel({
   getDoctorById: (id: string) => { id: string; name: string; title: string } | undefined
   getProjectById: (id: string) => { id: string; name: string; category: ProjectCategory; requiredQualifications: Qualification[] } | undefined
   getRoomById: (id: string) => { id: string; name: string } | undefined
-  getAssistantById: (id: string) => { id: string; name: string; status: string } | undefined
-  assistants: { id: string; name: string; status: string; qualifications: Qualification[] }[]
+  getAssistantById: (id: string) => Assistant | undefined
+  assistants: Assistant[]
   onAssign: (scheduleId: string, assistantId: string) => void
   onRemove: (scheduleId: string, assistantId: string) => void
 }) {
@@ -740,7 +986,7 @@ function ScheduleDetailPanel({
 
   const assignedAssistants = schedule.assistantIds
     .map((id) => getAssistantById(id))
-    .filter(Boolean)
+    .filter((a): a is Assistant => a !== undefined)
 
   const recommendedAssistants = project
     ? assistants.filter((a) => {
@@ -802,25 +1048,23 @@ function ScheduleDetailPanel({
           </div>
         ) : (
           <div className="space-y-2">
-            {assignedAssistants.map((a) =>
-              a ? (
-                <div
-                  key={a.id}
-                  className="flex items-center gap-3 p-2.5 rounded-lg bg-warm-50 border border-warm-200/60"
-                >
-                  <div className="w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center">
-                    <UserCheck size={12} className="text-emerald-600" />
-                  </div>
-                  <span className="text-sm font-medium text-navy-800 flex-1">{a.name}</span>
-                  <button
-                    onClick={() => onRemove(schedule.id, a.id)}
-                    className="text-xs text-coral-400 hover:text-coral-600 font-medium transition-colors"
-                  >
-                    移除
-                  </button>
+            {assignedAssistants.map((a) => (
+              <div
+                key={a.id}
+                className="flex items-center gap-3 p-2.5 rounded-lg bg-warm-50 border border-warm-200/60"
+              >
+                <div className="w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center">
+                  <UserCheck size={12} className="text-emerald-600" />
                 </div>
-              ) : null
-            )}
+                <span className="text-sm font-medium text-navy-800 flex-1">{a.name}</span>
+                <button
+                  onClick={() => onRemove(schedule.id, a.id)}
+                  className="text-xs text-coral-400 hover:text-coral-600 font-medium transition-colors"
+                >
+                  移除
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </div>
